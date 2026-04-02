@@ -2,11 +2,16 @@
 
 import asyncio
 import logging
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError
 
 from forge.config import QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL, LLM_TIMEOUT
 
 logger = logging.getLogger(__name__)
+
+
+class LLMClientError(Exception):
+    """Raised when LLM API call fails after all retries."""
+    pass
 
 
 class LLMClient:
@@ -42,6 +47,8 @@ class LLMClient:
             model=QWEN_MODEL,
             messages=messages,
         )
+        if not response.choices or response.choices[0].message.content is None:
+            raise LLMClientError("Empty response from LLM")
         content = response.choices[0].message.content
         logger.info(f"[LLM] Response received: {len(content)} chars")
         return content
@@ -55,14 +62,17 @@ class LLMClient:
             max_retries: Maximum retry attempts.
 
         Returns:
-            LLM response text, or error message on failure.
+            LLM response text.
+
+        Raises:
+            LLMClientError: If all retry attempts fail.
         """
         for attempt in range(max_retries):
             try:
                 return await self.chat(prompt, system_prompt)
-            except Exception as e:
+            except (APIError, APIConnectionError, RateLimitError) as e:
                 logger.warning(f"[LLM] Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     logger.error(f"[LLM] All retries exhausted")
-                    return f"LLM调用失败: {e}"
+                    raise LLMClientError(f"LLM调用失败: {e}") from e
                 await asyncio.sleep(2 ** attempt)
