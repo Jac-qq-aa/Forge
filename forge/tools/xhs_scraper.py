@@ -27,8 +27,12 @@ class XhsScraper:
 
     async def __aexit__(self, *args):
         logger.info("[XhsScraper] Closing browser")
-        await self.browser.close()
-        await self.playwright.stop()
+        try:
+            if self.browser:
+                await self.browser.close()
+        finally:
+            if self.playwright:
+                await self.playwright.stop()
 
     async def scrape_post(self, url: str) -> dict:
         """Scrape a specific Xiaohongshu post by URL.
@@ -48,25 +52,29 @@ class XhsScraper:
         # Extract content - selectors may need adjustment based on actual page
         try:
             title = await self.page.locator("#detail-title").text_content() or ""
-        except:
+        except Exception:
             title = ""
 
         try:
             text = await self.page.locator("#detail-desc").text_content() or ""
-        except:
+        except Exception:
             text = ""
 
         try:
             images = await self.page.locator(".swiper-slide img").evaluate_all(
                 "imgs => imgs.map(i => i.src).filter(s => s)"
             )
-        except:
+        except Exception:
             images = []
 
         try:
             likes_text = await self.page.locator(".like-wrapper .count").text_content() or "0"
-            likes = int(likes_text.replace("+", "").replace("万", "0000"))
-        except:
+            likes_text = likes_text.replace("+", "").strip()
+            if "万" in likes_text:
+                likes = int(float(likes_text.replace("万", "")) * 10000)
+            else:
+                likes = int(likes_text)
+        except Exception:
             likes = 0
 
         result = {
