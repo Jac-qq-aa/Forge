@@ -1,0 +1,59 @@
+"""Publisher node - dual-platform content publishing."""
+
+import logging
+from forge.graph.state import GraphState
+from forge.tools.xhs_publisher import XhsPublisher
+from forge.tools.zhihu_publisher import ZhihuPublisher
+
+logger = logging.getLogger(__name__)
+
+
+async def publisher_node(state: GraphState) -> dict:
+    """Publish content to target platform."""
+    target_platform = state.get("target_platform", "xhs_video")
+    video_path = state.get("video_path", "")
+    final_script = state.get("final_script", "")
+
+    logger.info(f"[Publisher] Starting publication to: {target_platform}")
+    logger.info(f"[Publisher] Video path: {video_path}")
+
+    # Extract title from script (first line or first 50 chars)
+    lines = final_script.strip().split("\n")
+    title = lines[0][:50] if lines else "无标题"
+    description = final_script
+
+    result = {"success": False, "error": "Unknown platform"}
+
+    try:
+        if target_platform == "xhs_video":
+            async with XhsPublisher() as publisher:
+                await publisher.login()
+                result = await publisher.publish_video(video_path, title, description)
+
+        elif target_platform == "zhihu_article":
+            async with ZhihuPublisher() as publisher:
+                await publisher.login()
+                result = await publisher.publish_article(title, description)
+
+        elif target_platform == "zhihu_video":
+            async with ZhihuPublisher() as publisher:
+                await publisher.login()
+                result = await publisher.publish_video(video_path, title, description)
+
+        else:
+            logger.error(f"[Publisher] Unknown target platform: {target_platform}")
+            return {"publish_status": f"FAILED: 未知目标平台 {target_platform}"}
+
+    except Exception as e:
+        logger.error(f"[Publisher] Publication error: {e}")
+        result = {"success": False, "error": str(e)}
+
+    if result.get("success"):
+        publish_status = f"SUCCESS: {result.get('post_url', '已发布')}"
+        logger.info(f"[Publisher] {publish_status}")
+    else:
+        publish_status = f"FAILED: {result.get('error', '未知错误')}"
+        logger.warning(f"[Publisher] {publish_status}")
+
+    logger.info("[Publisher] Node completed")
+    return {"publish_status": publish_status}
