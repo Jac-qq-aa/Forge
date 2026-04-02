@@ -52,12 +52,14 @@ class ZhihuScraper:
         # Extract content - selectors may need adjustment based on actual page
         try:
             title = await self.page.locator(".Post-Title").text_content() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ZhihuScraper] Failed to extract article title: {e}")
             title = ""
 
         try:
             text = await self.page.locator(".Post-RichText").text_content() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ZhihuScraper] Failed to extract article text: {e}")
             text = ""
 
         try:
@@ -69,7 +71,8 @@ class ZhihuScraper:
                 likes = int(float(likes_text.replace("万", "")) * 10000)
             else:
                 likes = int(likes_text) if likes_text else 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ZhihuScraper] Failed to extract article likes: {e}")
             likes = 0
 
         result = {
@@ -99,14 +102,16 @@ class ZhihuScraper:
         # Extract question title
         try:
             title = await self.page.locator(".QuestionHeader-title").text_content() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ZhihuScraper] Failed to extract question title: {e}")
             title = ""
 
         # Get top answer (first List-item)
+        top_answer_item = self.page.locator(".List-item").first
         try:
-            top_answer_item = self.page.locator(".List-item").first
             answer_text = await top_answer_item.locator(".RichContent-inner").text_content() or ""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ZhihuScraper] Failed to extract answer text: {e}")
             answer_text = ""
 
         # Get likes from top answer
@@ -119,7 +124,8 @@ class ZhihuScraper:
                 likes = int(float(likes_text.replace("万", "")) * 10000)
             else:
                 likes = int(likes_text) if likes_text else 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[ZhihuScraper] Failed to extract likes: {e}")
             likes = 0
 
         result = {
