@@ -161,8 +161,8 @@
             <p id="deep-outline-status" class="hint" style="color: #4CAF50;">大纲已生成，请确认或修改</p>
 
             <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                <h4 style="margin-bottom: 10px;">生成的大纲：</h4>
-                <pre id="deep-outline-content" style="white-space: pre-wrap; font-size: 14px; line-height: 1.6;"></pre>
+                <h4 style="margin-bottom: 10px;">生成的大纲（可直接编辑）：</h4>
+                <textarea id="deep-outline-content" rows="12" style="width: 100%; font-size: 14px; line-height: 1.6; border: 1px solid #ddd; border-radius: 8px; padding: 10px; resize: vertical;"></textarea>
             </div>
 
             <div id="deep-profile-display" style="background: #e8f5e9; padding: 10px; border-radius: 8px; margin-bottom: 20px;">
@@ -177,8 +177,10 @@
 
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button id="deep-accept-btn" class="btn btn-primary" onclick="acceptOutline()">✅ 确认大纲，生成全文</button>
-                <button id="deep-modify-btn" class="btn btn-secondary" onclick="showModifyInput()">📝 修改大纲</button>
+                <button id="deep-edit-accept-btn" class="btn btn-primary" onclick="acceptEditedOutline()" style="display: none; background: #FF9800;">✅ 使用编辑后的大纲</button>
+                <button id="deep-modify-btn" class="btn btn-secondary" onclick="showModifyInput()">📝 AI 修改大纲</button>
                 <button id="deep-submit-modify-btn" class="btn btn-secondary" style="display: none;" onclick="submitOutlineModification()">提交修改</button>
+                <button class="btn btn-secondary" onclick="backToProfileInput()">← 返回修改需求</button>
                 <p id="deep-version-info" style="color: #666; font-size: 12px;">大纲版本：<span id="deep-outline-version">1</span>（最多 3 次）</p>
             </div>
         </section>
@@ -189,16 +191,19 @@
                 <span class="step-badge">步骤 2.8</span>
                 <h2>全文预览</h2>
             </div>
-            <p id="deep-content-status" class="hint" style="color: #4CAF50;">全文已生成</p>
+            <p id="deep-content-status" class="hint" style="color: #4CAF50;">全文已生成，可直接编辑或进入对话微调</p>
 
             <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                <pre id="deep-content-preview" style="white-space: pre-wrap; font-size: 14px; line-height: 1.6; max-height: 400px; overflow-y: auto;"></pre>
+                <h4 style="margin-bottom: 10px;">生成的全文（可直接编辑）：</h4>
+                <textarea id="deep-content-preview" rows="15" style="width: 100%; font-size: 14px; line-height: 1.6; border: 1px solid #ddd; border-radius: 8px; padding: 10px; resize: vertical; max-height: 500px;"></textarea>
             </div>
 
-            <div style="display: flex; gap: 10px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button id="deep-start-chat-btn" class="btn btn-primary" onclick="startDeepChat()">💬 进入微调对话</button>
+                <button id="deep-save-edit-btn" class="btn btn-secondary" onclick="saveEditedContent()" style="display: none; background: #FF9800;">💾 保存编辑</button>
                 <button id="deep-finalize-btn" class="btn btn-secondary" onclick="finalizeDeepSession()">✅ 定稿保存</button>
                 <button class="btn btn-secondary" onclick="backToOutline()">← 返回修改大纲</button>
+                <button class="btn btn-secondary" onclick="backToModeSelection()">← 返回快速改写</button>
             </div>
         </section>
 
@@ -999,8 +1004,8 @@
 
                 deepSessionId = data.session_id;
 
-                // 显示大纲确认界面
-                document.getElementById('deep-outline-content').textContent = data.outline;
+                // 显示大纲确认界面（textarea 用 value）
+                document.getElementById('deep-outline-content').value = data.outline;
                 document.getElementById('deep-profile-info').textContent =
                     `语气：${data.profile.tone || '未指定'}\n目标读者：${data.profile.target_audience || '未指定'}\n侧重点：${data.profile.focus_point || '未指定'}`;
                 document.getElementById('deep-outline-version').textContent = data.outline_version;
@@ -1048,8 +1053,8 @@
                     return;
                 }
 
-                // 更新大纲显示
-                document.getElementById('deep-outline-content').textContent = data.outline;
+                // 更新大纲显示（textarea 用 value）
+                document.getElementById('deep-outline-content').value = data.outline;
                 document.getElementById('deep-outline-version').textContent = data.outline_version;
                 document.getElementById('deep-outline-status').textContent = '大纲已修改，请确认';
                 document.getElementById('deep-outline-status').style.color = '#4CAF50';
@@ -1088,9 +1093,9 @@
                     return;
                 }
 
-                // 显示全文预览
-                document.getElementById('deep-content-preview').textContent = data.draft;
-                document.getElementById('deep-content-status').textContent = '全文已生成，请确认定稿';
+                // 显示全文预览（textarea 用 value）
+                document.getElementById('deep-content-preview').value = data.draft;
+                document.getElementById('deep-content-status').textContent = '全文已生成，可直接编辑或定稿';
 
                 showSection(document.getElementById('deep-content-section'));
                 showNotification('全文已生成！', 'success');
@@ -1136,6 +1141,84 @@
         function backToOutline() {
             showSection(document.getElementById('deep-outline-section'));
         }
+
+        function backToProfileInput() {
+            showSection(document.getElementById('deep-profile-section'));
+        }
+
+        // 使用编辑后的大纲生成全文
+        async function acceptEditedOutline() {
+            const editedOutline = document.getElementById('deep-outline-content').value.trim();
+            if (!editedOutline) {
+                showNotification('大纲内容不能为空', 'error');
+                return;
+            }
+
+            document.getElementById('deep-outline-status').textContent = '正在用编辑后的大纲生成全文...';
+            document.getElementById('deep-outline-status').style.color = '#FF9800';
+
+            try {
+                // 先更新大纲到 session
+                const updateResponse = await fetch('/api/deep_mode/update_outline', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: deepSessionId,
+                        outline: editedOutline,
+                    }),
+                });
+
+                // 然后生成全文
+                const response = await fetch('/api/deep_mode/outline_action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: deepSessionId,
+                        action: 'accept',
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showNotification('生成失败：' + data.error, 'error');
+                    return;
+                }
+
+                document.getElementById('deep-content-preview').value = data.draft;
+                document.getElementById('deep-content-status').textContent = '全文已生成，可直接编辑或定稿';
+
+                showSection(document.getElementById('deep-content-section'));
+                showNotification('使用编辑后的大纲生成了全文！', 'success');
+
+            } catch (error) {
+                showNotification('请求失败：' + error.message, 'error');
+            }
+        }
+
+        // 保存编辑后的正文
+        function saveEditedContent() {
+            const editedContent = document.getElementById('deep-content-preview').value;
+            showNotification('内容已保存到本地，可继续编辑或定稿', 'success');
+            document.getElementById('deep-save-edit-btn').style.display = 'none';
+        }
+
+        // 监听大纲编辑变化
+        document.addEventListener('DOMContentLoaded', function() {
+            const outlineTextarea = document.getElementById('deep-outline-content');
+            if (outlineTextarea) {
+                outlineTextarea.addEventListener('input', function() {
+                    document.getElementById('deep-edit-accept-btn').style.display = 'inline-block';
+                });
+            }
+
+            const contentTextarea = document.getElementById('deep-content-preview');
+            if (contentTextarea) {
+                contentTextarea.addEventListener('input', function() {
+                    document.getElementById('deep-save-edit-btn').style.display = 'inline-block';
+                });
+            }
+        });
 
         // ========== WebSocket 微调对话函数 ==========
 

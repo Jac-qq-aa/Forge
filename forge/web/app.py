@@ -724,6 +724,33 @@ async def api_get_session_status(session_id: str):
         return {"error": "Session not found", "session_id": session_id}, 404
 
 
+class UpdateOutlineRequest(BaseModel):
+    """更新大纲请求。"""
+    session_id: str
+    outline: str
+
+
+@app.post("/api/deep_mode/update_outline")
+async def api_update_outline(request: UpdateOutlineRequest):
+    """直接更新大纲内容（用户手动编辑后）。"""
+    logger.info(f"[API] Update outline: session={request.session_id}")
+
+    session_manager = get_session_manager()
+
+    try:
+        session = await session_manager.update_session(
+            request.session_id,
+            outline=request.outline
+        )
+        return {
+            "status": "updated",
+            "session_id": session["session_id"],
+            "outline": session["outline"],
+        }
+    except SessionNotFoundError:
+        return {"error": "Session not found"}, 404
+
+
 @app.post("/api/deep_mode/outline_action")
 async def api_outline_action(request: OutlineActionRequest):
     """大纲确认或修改。"""
