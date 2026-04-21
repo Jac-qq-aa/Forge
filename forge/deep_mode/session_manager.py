@@ -32,36 +32,51 @@ class SessionManager:
     def __init__(self, db_path: str = SESSION_DB_PATH):
         self.db_path = db_path
         self._initialized = False
+        self._init_lock = asyncio.Lock()
 
     async def _ensure_db(self):
-        """确保数据库和表已创建。"""
-        if self._initialized:
-            return
+        """确保数据库和表已创建（带锁保护，防止竞态条件）。"""
+        async with self._init_lock:
+            if self._initialized:
+                return
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS deep_mode_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    article_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    stage TEXT NOT NULL,
-                    profile TEXT NOT NULL,
-                    outline TEXT NOT NULL,
-                    outline_version INTEGER NOT NULL,
-                    draft_v1 TEXT NOT NULL,
-                    current_draft TEXT NOT NULL,
-                    tuning_history TEXT NOT NULL,
-                    source_article TEXT NOT NULL,
-                    rag_context TEXT NOT NULL,
-                    final_draft TEXT NOT NULL,
-                    finalized_at TEXT
-                )
-            """)
-            await db.commit()
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS deep_mode_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        article_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        stage TEXT NOT NULL,
+                        profile TEXT NOT NULL,
+                        outline TEXT NOT NULL,
+                        outline_version INTEGER NOT NULL,
+                        draft_v1 TEXT NOT NULL,
+                        current_draft TEXT NOT NULL,
+                        tuning_history TEXT NOT NULL,
+                        source_article TEXT NOT NULL,
+                        rag_context TEXT NOT NULL,
+                        final_draft TEXT NOT NULL,
+                        finalized_at TEXT
+                    )
+                """)
+                # 创建索引以优化常用查询
+                await db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_sessions_article_id
+                    ON deep_mode_sessions(article_id)
+                """)
+                await db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_sessions_stage
+                    ON deep_mode_sessions(stage)
+                """)
+                await db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_sessions_created_at
+                    ON deep_mode_sessions(created_at)
+                """)
+                await db.commit()
 
-        self._initialized = True
-        logger.info(f"[SessionManager] Database initialized: {self.db_path}")
+            self._initialized = True
+            logger.info(f"[SessionManager] Database initialized: {self.db_path}")
 
     async def create_session(
         self,
