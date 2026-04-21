@@ -1,0 +1,1867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forge - 锐博集团内容转换平台</title>
+    <link rel="stylesheet" href="/static/style.css?v=6">
+</head>
+<body>
+    <!-- Logo 在右上角 -->
+    <img src="/static/logo.jpg" alt="锐博集团" class="top-logo">
+
+    <!-- 主标题 -->
+    <header class="main-header">
+        <h1 class="main-title">Forge 内容转换平台</h1>
+        <p class="main-subtitle">智能抓取 · AI改写 · 内容发布</p>
+    </header>
+
+    <div class="container">
+        <!-- Step 1: 配置参数 -->
+        <section class="card">
+            <div class="card-header">
+                <span class="step-badge">步骤 1</span>
+                <h2>配置参数</h2>
+            </div>
+            <div class="form-group">
+                <label for="source-platform">来源平台</label>
+                <select id="source-platform" onchange="toggleSourcePlatform()">
+                    <option value="zhihu">知乎</option>
+                    <option value="wechat">微信公众号</option>
+                    <option value="manual">手动输入</option>
+                </select>
+            </div>
+
+            <!-- 手动输入区域 -->
+            <div id="manual-input-group" style="display: none;">
+                <div class="form-group">
+                    <label for="manual-title">文章标题</label>
+                    <input type="text" id="manual-title" placeholder="输入文章标题...">
+                </div>
+                <div class="form-group">
+                    <label for="manual-content">文章内容</label>
+                    <textarea id="manual-content" rows="10" placeholder="输入文章内容..."></textarea>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="target-platform">目标平台</label>
+                <select id="target-platform">
+                    <option value="zhihu_article">知乎文章</option>
+                    <option value="wechat_article">微信公众号文章</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="search-mode">搜索方式</label>
+                <select id="search-mode" onchange="toggleSearchMode()">
+                    <option value="keyword">关键词搜索</option>
+                    <option value="blogger">博主文章</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="keyword-group">
+                <label for="search-keyword">搜索关键词</label>
+                <input type="text" id="search-keyword" placeholder="输入搜索关键词..." value="人力资源">
+            </div>
+
+            <div class="form-group" id="blogger-group" style="display: none;">
+                <label>博主选择</label>
+                <div class="blogger-selector">
+                    <select id="blogger-list" onchange="selectBlogger()">
+                        <option value="">-- 选择博主 --</option>
+                        <option value="rui-bo-ji-tuan-5">rui-bo-ji-tuan-5 (锐博集团)</option>
+                    </select>
+                    <button class="btn btn-small btn-add" onclick="showAddBloggerDialog()">添加</button>
+                    <button class="btn btn-small btn-remove" onclick="removeBlogger()">删除</button>
+                </div>
+                <input type="text" id="blogger-id" placeholder="或直接输入博主ID...">
+                <p class="input-hint">知乎: 用户主页链接中的ID，如 zhihu.com/people/<b>rui-bo-ji-tuan-5</b></p>
+            </div>
+
+            <div class="form-group">
+                <label for="max-results">最大结果数</label>
+                <input type="number" id="max-results" value="5" min="1" max="10">
+            </div>
+
+            <button id="search-btn" class="btn btn-primary btn-large" onclick="searchArticles()">
+                <span class="btn-text">🔍 搜索文章</span>
+                <span class="btn-loading" style="display: none;">
+                    <span class="spinner"></span>
+                    搜索中...
+                </span>
+            </button>
+            <p id="search-hint" class="search-hint" style="display: none;">
+                正在启动浏览器搜索，预计需要 30-60 秒，请耐心等待...
+            </p>
+        </section>
+
+        <!-- Step 2: 选择文章 -->
+        <section id="articles-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2</span>
+                <h2>选择文章</h2>
+            </div>
+            <p id="articles-count" class="hint"></p>
+            <div id="articles-list" class="articles-list"></div>
+        </section>
+
+        <!-- Step 2.5: 选择改写模式 -->
+        <section id="mode-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2.5</span>
+                <h2>选择改写模式</h2>
+            </div>
+            <p id="selected-article-title" class="hint" style="font-weight: bold;"></p>
+            <div style="display: flex; gap: 20px; margin-top: 20px;">
+                <div class="mode-card" onclick="selectMode('normal')" style="flex: 1; padding: 20px; border: 2px solid #ddd; border-radius: 12px; cursor: pointer; text-align: center;">
+                    <h3 style="margin-bottom: 10px;">⚡ 快速改写</h3>
+                    <p style="color: #666; font-size: 14px;">一键生成，适合快速产出</p>
+                    <p style="color: #888; font-size: 12px;">约 20-40 秒</p>
+                </div>
+                <div class="mode-card" onclick="selectMode('deep')" style="flex: 1; padding: 20px; border: 2px solid #4CAF50; border-radius: 12px; cursor: pointer; text-align: center; background: #e8f5e9;">
+                    <h3 style="margin-bottom: 10px;">🌟 深度生成</h3>
+                    <p style="color: #666; font-size: 14px;">多轮对话，精细定制</p>
+                    <p style="color: #888; font-size: 12px;">可修改大纲、微调内容</p>
+                </div>
+            </div>
+            <div style="margin-top: 20px;">
+                <button class="btn btn-secondary" onclick="backToArticles()">← 返回文章列表</button>
+            </div>
+        </section>
+
+        <!-- Step 2.6: 深度生成 - 画像表单 -->
+        <section id="deep-profile-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2.6</span>
+                <h2>填写改写需求</h2>
+            </div>
+            <p class="hint">请描述您的改写需求，AI 将自动提取关键信息</p>
+
+            <div class="form-group">
+                <label for="deep-user-input">改写需求描述</label>
+                <textarea id="deep-user-input" rows="4" placeholder="例如：改成知乎回答风格，语气专业，给HR从业者看，重点讲实操案例..."></textarea>
+                <p class="input-hint">可描述语气风格、目标读者、侧重点、篇幅等</p>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button id="deep-start-btn" class="btn btn-primary btn-large" onclick="startDeepMode()">
+                    ✨ 开始深度生成
+                </button>
+                <button class="btn btn-secondary" onclick="backToModeSelection()">← 返回模式选择</button>
+            </div>
+        </section>
+
+        <!-- Step 2.7: 深度生成 - 大纲确认 -->
+        <section id="deep-outline-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2.7</span>
+                <h2>确认大纲</h2>
+            </div>
+            <p id="deep-outline-status" class="hint" style="color: #4CAF50;">大纲已生成，请确认或修改</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <h4 style="margin-bottom: 10px;">生成的大纲：</h4>
+                <pre id="deep-outline-content" style="white-space: pre-wrap; font-size: 14px; line-height: 1.6;"></pre>
+            </div>
+
+            <div id="deep-profile-display" style="background: #e8f5e9; padding: 10px; border-radius: 8px; margin-bottom: 20px;">
+                <h4 style="margin-bottom: 5px;">提取的用户画像：</h4>
+                <p id="deep-profile-info" style="font-size: 13px;"></p>
+            </div>
+
+            <div class="form-group" id="deep-modify-group" style="display: none;">
+                <label for="deep-modify-input">修改意见</label>
+                <textarea id="deep-modify-input" rows="2" placeholder="例如：把第二部分改成案例分析..."></textarea>
+            </div>
+
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button id="deep-accept-btn" class="btn btn-primary" onclick="acceptOutline()">✅ 确认大纲，生成全文</button>
+                <button id="deep-modify-btn" class="btn btn-secondary" onclick="showModifyInput()">📝 修改大纲</button>
+                <button id="deep-submit-modify-btn" class="btn btn-secondary" style="display: none;" onclick="submitOutlineModification()">提交修改</button>
+                <p id="deep-version-info" style="color: #666; font-size: 12px;">大纲版本：<span id="deep-outline-version">1</span>（最多 3 次）</p>
+            </div>
+        </section>
+
+        <!-- Step 2.8: 深度生成 - 全文预览 -->
+        <section id="deep-content-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2.8</span>
+                <h2>全文预览</h2>
+            </div>
+            <p id="deep-content-status" class="hint" style="color: #4CAF50;">全文已生成</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <pre id="deep-content-preview" style="white-space: pre-wrap; font-size: 14px; line-height: 1.6; max-height: 400px; overflow-y: auto;"></pre>
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+                <button id="deep-finalize-btn" class="btn btn-primary" onclick="finalizeDeepSession()">✅ 定稿保存</button>
+                <button class="btn btn-secondary" onclick="backToOutline()">← 返回修改大纲</button>
+            </div>
+        </section>
+
+        <!-- Step 2.5: 选择回答 -->
+        <section id="answers-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2</span>
+                <h2>选择回答</h2>
+            </div>
+            <p id="answers-info" class="hint"></p>
+            <div id="answers-list" class="answers-list"></div>
+            <div class="answers-actions">
+                <button id="merge-btn" class="btn btn-primary" onclick="mergeSelectedAnswers()" disabled>
+                    ✅ 合并选中回答洗稿
+                </button>
+                <button class="btn btn-secondary" onclick="backToArticles()">
+                    ← 返回文章列表
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 3: 处理中 -->
+        <section id="processing-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 3</span>
+                <h2>AI 智能改写</h2>
+            </div>
+            <div class="processing-info">
+                <p id="processing-title"></p>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <p id="progress-status">正在处理...</p>
+                <p id="processing-hint" class="processing-hint">
+                    正在调用 AI 模型改写内容，预计需要 20-40 秒...
+                </p>
+            </div>
+        </section>
+
+        <!-- Step 4: 结果 -->
+        <section id="result-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 4</span>
+                <h2>生成结果</h2>
+            </div>
+            <div class="result-info">
+                <div class="result-meta">
+                    <span class="meta-item">
+                        <strong>文案路径:</strong>
+                        <code id="result-script-path"></code>
+                    </span>
+                    <span class="meta-item" id="video-path-container" style="display: none;">
+                        <strong>视频路径:</strong>
+                        <code id="result-video-path"></code>
+                    </span>
+                </div>
+            </div>
+
+            <!-- 对比视图 -->
+            <div class="compare-container">
+                <div class="compare-panel">
+                    <div class="compare-header">
+                        <h3>📄 原文内容</h3>
+                        <span class="compare-meta" id="original-meta"></span>
+                    </div>
+                    <pre id="original-content" class="compare-content"></pre>
+                </div>
+                <div class="compare-divider"></div>
+                <div class="compare-panel">
+                    <div class="compare-header">
+                        <h3>✨ 改写内容</h3>
+                        <div class="result-actions-inline">
+                            <button id="edit-btn" class="btn btn-secondary btn-small" onclick="toggleEdit()">编辑</button>
+                            <button id="save-btn" class="btn btn-primary btn-small" style="display: none;" onclick="saveEdit()">保存</button>
+                            <button id="cancel-btn" class="btn btn-secondary btn-small" style="display: none;" onclick="cancelEdit()">取消</button>
+                        </div>
+                    </div>
+                    <pre id="result-script-content" class="compare-content"></pre>
+                    <textarea id="result-script-editor" class="script-editor compare-editor" style="display: none;"></textarea>
+                </div>
+            </div>
+
+            <!-- 审核评价区域 -->
+            <div id="review-section" class="card" style="margin-top: 15px; display: none;">
+                <div class="compare-header">
+                    <h3>📋 审核评价</h3>
+                </div>
+                <pre id="review-content" class="compare-content" style="background: #f8f9fa; padding: 15px; border-radius: 8px;"></pre>
+            </div>
+
+            <!-- 数字人图片选择区域 -->
+            <div id="digital-human-avatar-section" style="margin-top: 15px;">
+                <div class="card-header" style="margin-bottom: 15px;">
+                    <h3>🖼️ 选择数字人形象</h3>
+                </div>
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <!-- 预设图片选择 -->
+                    <div class="avatar-option" data-avatar="default1" onclick="selectAvatar('default1')" style="cursor: pointer; padding: 10px; border: 2px solid #ddd; border-radius: 8px;">
+                        <img src="https://img.alicdn.com/imgextra/i3/O1CN011FObkp1T7Ttowoq4F_!!6000000002335-0-tps-1440-1797.jpg" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">
+                        <p style="margin-top: 5px; font-size: 12px;">默认形象 1</p>
+                    </div>
+                    <div class="avatar-option" data-avatar="default2" onclick="selectAvatar('default2')" style="cursor: pointer; padding: 10px; border: 2px solid #ddd; border-radius: 8px;">
+                        <img src="https://forge-digitalhuman.oss-cn-beijing.aliyuncs.com/digital_human/avatar_default2.png" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">
+                        <p style="margin-top: 5px; font-size: 12px;">默认形象 2</p>
+                    </div>
+                    <div class="avatar-option" data-avatar="default3" onclick="selectAvatar('default3')" style="cursor: pointer; padding: 10px; border: 2px solid #ddd; border-radius: 8px;">
+                        <img src="https://forge-digitalhuman.oss-cn-beijing.aliyuncs.com/digital_human/avatar_default3.png" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">
+                        <p style="margin-top: 5px; font-size: 12px;">默认形象 3</p>
+                    </div>
+                    <!-- 自定义图片上传 -->
+                    <div style="padding: 10px; border: 2px solid #ddd; border-radius: 8px;">
+                        <input type="file" id="custom-avatar-input" accept="image/*" style="display: none;" onchange="uploadCustomAvatar(event)">
+                        <button class="btn btn-secondary btn-small" onclick="document.getElementById('custom-avatar-input').click()">📁 上传自定义图片</button>
+                        <p style="margin-top: 5px; font-size: 12px; color: #666;">或上传自己的照片</p>
+                    </div>
+                </div>
+                <p id="selected-avatar-info" style="margin-top: 10px; color: #666;">当前选择：默认形象 1</p>
+            </div>
+
+            <!-- 数字人音频选择区域 -->
+            <div id="digital-human-voice-section" style="margin-top: 15px;">
+                <div class="card-header" style="margin-bottom: 15px;">
+                    <h3>🎙️ 选择语音风格</h3>
+                </div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <!-- 女声选项 -->
+                    <div class="voice-option" data-voice="longxiaochun" onclick="selectVoice('longxiaochun')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #4CAF50; border-radius: 20px; background: #e8f5e9;">
+                        <span style="font-size: 14px;">🌸 温柔女声</span>
+                    </div>
+                    <div class="voice-option" data-voice="longyue" onclick="selectVoice('longyue')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">🍯 甜美女声</span>
+                    </div>
+                    <div class="voice-option" data-voice="longwan" onclick="selectVoice('longwan')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">🎉 活泼女声</span>
+                    </div>
+                    <div class="voice-option" data-voice="longshuang" onclick="selectVoice('longshuang')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">📚 知性女声</span>
+                    </div>
+                    <!-- 男声选项 -->
+                    <div class="voice-option" data-voice="longfei" onclick="selectVoice('longfei')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">👔 沉稳男声</span>
+                    </div>
+                    <div class="voice-option" data-voice="longteng" onclick="selectVoice('longteng')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">🎤 大气男声</span>
+                    </div>
+                    <!-- 童声选项 -->
+                    <div class="voice-option" data-voice="longjielidou" onclick="selectVoice('longjielidou')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">🧒 活泼童声</span>
+                    </div>
+                </div>
+                <p id="selected-voice-info" style="margin-top: 10px; color: #666;">当前选择：温柔女声（龙小春）</p>
+            </div>
+
+            <div class="result-actions">
+                <button class="btn btn-primary btn-large" onclick="confirmPublish()">确认保存</button>
+                <button class="btn btn-success btn-large" onclick="downloadContent()">📥 下载到本地</button>
+                <button id="generate-video-btn" class="btn btn-secondary btn-large" onclick="generateVideoFromResult()">🎬 生成AI视频</button>
+                <button id="generate-digital-human-btn" class="btn btn-secondary btn-large" onclick="generateDigitalHumanFromResult()">🧑 生成数字人视频</button>
+                <button class="btn btn-secondary" onclick="resetWorkflow()">重新开始</button>
+            </div>
+
+            <!-- 数字人视频生成进度 -->
+            <div id="digital-human-section" style="display: none; margin-top: 20px;">
+                <div class="card-header" style="margin-bottom: 15px;">
+                    <h3>🧑 数字人视频生成中</h3>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="digital-human-progress-fill"></div>
+                </div>
+                <p id="digital-human-progress-status">正在调用阿里云万相数字人 API...</p>
+                <p class="input-hint">数字人视频生成需要较长时间，预计 5-10 分钟，请耐心等待...</p>
+            </div>
+
+            <!-- 数字人视频结果 -->
+            <div id="digital-human-result-section" style="display: none; margin-top: 20px;">
+                <div class="card-header" style="margin-bottom: 15px;">
+                    <h3>✅ 数字人视频已生成</h3>
+                </div>
+                <p class="meta-item">
+                    <strong>视频路径:</strong>
+                    <code id="digital-human-video-path"></code>
+                </p>
+                <p class="meta-item">
+                    <strong>任务目录:</strong>
+                    <code id="digital-human-task-dir"></code>
+                    <span class="input-hint" style="margin-left: 10px;">（包含音频、分段视频等中间产物）</span>
+                </p>
+                <div style="margin-top: 15px;">
+                    <button id="download-video-btn" class="btn btn-success" onclick="downloadDigitalHumanVideo()">📥 下载视频</button>
+                    <button id="download-task-btn" class="btn btn-secondary" onclick="downloadTaskDir()">📦 下载任务目录</button>
+                </div>
+            </div>
+
+            <!-- 视频生成进度 -->
+            <div id="video-generation-section" style="display: none; margin-top: 20px;">
+                <div class="card-header" style="margin-bottom: 15px;">
+                    <h3>🎬 视频生成中</h3>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="video-progress-fill"></div>
+                </div>
+                <p id="video-progress-status">正在调用AI生成视频...</p>
+            </div>
+
+            <!-- 视频结果 -->
+            <div id="video-result-section" style="display: none; margin-top: 20px;">
+                <div class="card-header" style="margin-bottom: 15px;">
+                    <h3>✅ 视频已生成</h3>
+                </div>
+                <p class="meta-item">
+                    <strong>视频路径:</strong>
+                    <code id="generated-video-path"></code>
+                </p>
+            </div>
+        </section>
+
+        <!-- 错误提示 -->
+        <section id="error-section" class="card" style="display: none;">
+            <div class="card-header">
+                <h2>❌ 错误</h2>
+            </div>
+            <p id="error-message" class="error-message"></p>
+            <button class="btn btn-secondary" onclick="resetWorkflow()">重新开始</button>
+        </section>
+
+        <!-- 添加博主模态框 -->
+        <div id="blogger-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <h3>添加博主</h3>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="modal-blogger-id">博主ID</label>
+                        <input type="text" id="modal-blogger-id" placeholder="如: rui-bo-ji-tuan-5">
+                        <p class="input-hint">知乎主页链接中 people/ 后面的部分</p>
+                    </div>
+                    <div class="form-group">
+                        <label for="modal-blogger-note">备注名（可选）</label>
+                        <input type="text" id="modal-blogger-note" placeholder="如: 锐博集团">
+                        <p class="input-hint">方便识别，可不填</p>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="closeBloggerModal()">取消</button>
+                    <button class="btn btn-primary" onclick="confirmAddBlogger()">添加</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let selectedArticle = null;
+        let currentScriptContent = "";
+        let currentScriptPath = "";
+        let currentOriginalTitle = "";
+        let selectedAvatarUrl = "";  // 当前选择的头像 URL
+        let currentVideoPath = "";   // 当前生成的视频路径（用于下载）
+        let currentTaskDir = "";     // 当前任务目录路径（用于下载）
+        let selectedVoice = "longxiaochun";  // 当前选择的语音 ID
+
+        // 语音名称映射
+        const VOICE_NAMES = {
+            "longxiaochun": "温柔女声（龙小春）",
+            "longyue": "甜美女声（龙悦）",
+            "longwan": "活泼女声（龙婉）",
+            "longshuang": "知性女声（龙双）",
+            "longfei": "沉稳男声（龙飞）",
+            "longteng": "大气男声（龙腾）",
+            "longjielidou": "活泼童声（龙杰力豆）",
+        };
+
+        // 预设数字人图片 URL
+        const AVATAR_URLS = {
+            "default1": "https://img.alicdn.com/imgextra/i3/O1CN011FObkp1T7Ttowoq4F_!!6000000002335-0-tps-1440-1797.jpg",
+            "default2": "https://forge-digitalhuman.oss-cn-beijing.aliyuncs.com/digital_human/avatar_default2.png",
+            "default3": "https://forge-digitalhuman.oss-cn-beijing.aliyuncs.com/digital_human/avatar_default3.png",
+        };
+
+        // 初始化默认选择
+        selectedAvatarUrl = AVATAR_URLS["default1"];
+
+        // Preset bloggers
+        const PRESET_BLOGGERS = [
+            {id: 'rui-bo-ji-tuan-5', note: '锐博集团'}
+        ];
+
+        // DOM Elements
+        const searchBtn = document.getElementById('search-btn');
+        const articlesSection = document.getElementById('articles-section');
+        const processingSection = document.getElementById('processing-section');
+        const resultSection = document.getElementById('result-section');
+        const errorSection = document.getElementById('error-section');
+
+        // Initialize blogger list
+        function initBloggerList() {
+            const savedBloggers = JSON.parse(localStorage.getItem('customBloggers') || '[]');
+            const deletedBloggers = JSON.parse(localStorage.getItem('deletedBloggers') || '[]');
+            const bloggerList = document.getElementById('blogger-list');
+
+            // Remove deleted presets
+            PRESET_BLOGGERS.forEach(blogger => {
+                if (deletedBloggers.includes(blogger.id)) {
+                    const option = bloggerList.querySelector(`option[value="${blogger.id}"]`);
+                    if (option) option.remove();
+                }
+            });
+
+            // Clear custom options
+            const presetCount = PRESET_BLOGGERS.filter(b => !deletedBloggers.includes(b.id)).length + 1;
+            while (bloggerList.options.length > presetCount) {
+                bloggerList.remove(presetCount);
+            }
+
+            // Add custom bloggers
+            savedBloggers.forEach(blogger => {
+                if (!deletedBloggers.includes(blogger.id)) {
+                    const option = document.createElement('option');
+                    option.value = blogger.id;
+                    option.textContent = blogger.note ? `${blogger.id} (${blogger.note})` : blogger.id;
+                    bloggerList.appendChild(option);
+                }
+            });
+        }
+
+        function formatBloggerName(blogger) {
+            return blogger.note ? `${blogger.id} (${blogger.note})` : blogger.id;
+        }
+
+        function selectBlogger() {
+            const bloggerList = document.getElementById('blogger-list');
+            document.getElementById('blogger-id').value = bloggerList.value;
+        }
+
+        function showAddBloggerDialog() {
+            document.getElementById('modal-blogger-id').value = '';
+            document.getElementById('modal-blogger-note').value = '';
+            document.getElementById('blogger-modal').style.display = 'flex';
+            document.getElementById('modal-blogger-id').focus();
+        }
+
+        function closeBloggerModal() {
+            document.getElementById('blogger-modal').style.display = 'none';
+        }
+
+        function confirmAddBlogger() {
+            const id = document.getElementById('modal-blogger-id').value.trim();
+            const note = document.getElementById('modal-blogger-note').value.trim();
+
+            if (!id) {
+                alert('请输入博主ID');
+                return;
+            }
+
+            const savedBloggers = JSON.parse(localStorage.getItem('customBloggers') || '[]');
+            const deletedBloggers = JSON.parse(localStorage.getItem('deletedBloggers') || '[]');
+
+            const allOptions = Array.from(document.getElementById('blogger-list').options).map(o => o.value);
+            if (allOptions.includes(id)) {
+                alert('该博主已存在于列表中');
+                closeBloggerModal();
+                return;
+            }
+
+            if (deletedBloggers.includes(id)) {
+                const idx = deletedBloggers.indexOf(id);
+                deletedBloggers.splice(idx, 1);
+                localStorage.setItem('deletedBloggers', JSON.stringify(deletedBloggers));
+            }
+
+            const blogger = {id: id, note: note || ''};
+            const isPreset = PRESET_BLOGGERS.some(p => p.id === id);
+            if (!isPreset) {
+                savedBloggers.push(blogger);
+                localStorage.setItem('customBloggers', JSON.stringify(savedBloggers));
+            }
+
+            const bloggerList = document.getElementById('blogger-list');
+            const option = document.createElement('option');
+            option.value = id;
+            option.textContent = formatBloggerName(blogger);
+            bloggerList.appendChild(option);
+
+            bloggerList.value = id;
+            document.getElementById('blogger-id').value = id;
+
+            closeBloggerModal();
+            showNotification('博主已添加: ' + formatBloggerName(blogger), 'success');
+        }
+
+        function removeBlogger() {
+            const bloggerList = document.getElementById('blogger-list');
+            const selectedId = bloggerList.value;
+
+            if (!selectedId) {
+                alert('请先选择要删除的博主');
+                return;
+            }
+
+            const selectedOption = bloggerList.options[bloggerList.selectedIndex];
+            const displayName = selectedOption.textContent;
+
+            if (!confirm('确认删除博主: ' + displayName + '？')) {
+                return;
+            }
+
+            const savedBloggers = JSON.parse(localStorage.getItem('customBloggers') || '[]');
+            const index = savedBloggers.findIndex(b => b.id === selectedId);
+            if (index > -1) {
+                savedBloggers.splice(index, 1);
+                localStorage.setItem('customBloggers', JSON.stringify(savedBloggers));
+            }
+
+            const deletedBloggers = JSON.parse(localStorage.getItem('deletedBloggers') || '[]');
+            if (!deletedBloggers.includes(selectedId)) {
+                deletedBloggers.push(selectedId);
+                localStorage.setItem('deletedBloggers', JSON.stringify(deletedBloggers));
+            }
+
+            const option = bloggerList.querySelector(`option[value="${selectedId}"]`);
+            if (option) option.remove();
+
+            bloggerList.value = '';
+            document.getElementById('blogger-id').value = '';
+
+            showNotification('博主已删除: ' + displayName, 'success');
+        }
+
+        document.addEventListener('DOMContentLoaded', initBloggerList);
+
+        function setButtonLoading(btn, loading) {
+            const btnText = btn.querySelector('.btn-text');
+            const btnLoading = btn.querySelector('.btn-loading');
+            const searchHint = document.getElementById('search-hint');
+            if (loading) {
+                btnText.style.display = 'none';
+                btnLoading.style.display = 'inline-flex';
+                btn.disabled = true;
+                if (searchHint) searchHint.style.display = 'block';
+            } else {
+                btnText.style.display = 'inline';
+                btnLoading.style.display = 'none';
+                btn.disabled = false;
+                if (searchHint) searchHint.style.display = 'none';
+            }
+        }
+
+        function showSection(section) {
+            articlesSection.style.display = 'none';
+            document.getElementById('answers-section').style.display = 'none';
+            processingSection.style.display = 'none';
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'none';
+            if (section) section.style.display = 'block';
+        }
+
+        function showError(message) {
+            document.getElementById('error-message').textContent = message;
+            showSection(errorSection);
+        }
+
+        async function searchArticles() {
+            const sourcePlatform = document.getElementById('source-platform').value;
+
+            // 手动输入模式：直接处理
+            if (sourcePlatform === 'manual') {
+                await processManualInput();
+                return;
+            }
+
+            const searchMode = document.getElementById('search-mode').value;
+            const maxResults = parseInt(document.getElementById('max-results').value) || 5;
+
+            let source = '';
+            if (searchMode === 'keyword') {
+                source = document.getElementById('search-keyword').value.trim();
+                if (!source) {
+                    alert('请输入搜索关键词');
+                    return;
+                }
+            } else {
+                source = document.getElementById('blogger-id').value.trim();
+                if (!source) {
+                    alert('请输入博主ID');
+                    return;
+                }
+            }
+
+            setButtonLoading(searchBtn, true);
+
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        source: source,
+                        source_platform: sourcePlatform,
+                        max_results: maxResults,
+                        search_mode: searchMode,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    displayArticles(data.articles);
+                    showSection(articlesSection);
+                } else {
+                    showError(data.error || '搜索失败');
+                }
+            } catch (error) {
+                showError('搜索请求失败: ' + error.message);
+            } finally {
+                setButtonLoading(searchBtn, false);
+            }
+        }
+
+        async function processManualInput() {
+            const title = document.getElementById('manual-title').value.trim();
+            const content = document.getElementById('manual-content').value.trim();
+            const targetPlatform = document.getElementById('target-platform').value;
+
+            if (!title) {
+                alert('请输入文章标题');
+                return;
+            }
+            if (!content) {
+                alert('请输入文章内容');
+                return;
+            }
+            if (content.length < 100) {
+                alert('文章内容太短，建议至少100字');
+                return;
+            }
+
+            setButtonLoading(searchBtn, true);
+
+            document.getElementById('processing-title').textContent = `正在处理: ${title}`;
+            showSection(processingSection);
+
+            let progress = 0;
+            const progressFill = document.getElementById('progress-fill');
+            const progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 10, 90);
+                progressFill.style.width = progress + '%';
+            }, 500);
+
+            try {
+                const response = await fetch('/api/process_manual', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        title: title,
+                        text: content,
+                        source_platform: 'manual',
+                        target_platform: targetPlatform,
+                        generate_video: false,
+                    }),
+                });
+
+                const data = await response.json();
+
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+
+                if (data.success) {
+                    displayResult(data);
+                    setTimeout(() => showSection(resultSection), 500);
+                } else {
+                    showError(data.error || '处理失败');
+                }
+            } catch (error) {
+                clearInterval(progressInterval);
+                showError('处理请求失败: ' + error.message);
+            } finally {
+                setButtonLoading(searchBtn, false);
+            }
+        }
+
+        function toggleSearchMode() {
+            const mode = document.getElementById('search-mode').value;
+            const keywordGroup = document.getElementById('keyword-group');
+            const bloggerGroup = document.getElementById('blogger-group');
+
+            if (mode === 'keyword') {
+                keywordGroup.style.display = 'block';
+                bloggerGroup.style.display = 'none';
+            } else {
+                keywordGroup.style.display = 'none';
+                bloggerGroup.style.display = 'block';
+            }
+        }
+
+        function toggleSourcePlatform() {
+            const platform = document.getElementById('source-platform').value;
+            const searchModeGroup = document.getElementById('search-mode').parentElement;
+            const keywordGroup = document.getElementById('keyword-group');
+            const bloggerGroup = document.getElementById('blogger-group');
+            const maxResultsGroup = document.getElementById('max-results').parentElement;
+            const manualInputGroup = document.getElementById('manual-input-group');
+            const searchBtn = document.getElementById('search-btn');
+            const searchHint = document.getElementById('search-hint');
+
+            if (platform === 'manual') {
+                // 手动输入模式
+                searchModeGroup.style.display = 'none';
+                keywordGroup.style.display = 'none';
+                bloggerGroup.style.display = 'none';
+                maxResultsGroup.style.display = 'none';
+                manualInputGroup.style.display = 'block';
+                searchBtn.querySelector('.btn-text').textContent = '✨ 开始改写';
+                searchHint.textContent = '正在调用 AI 模型改写内容，预计需要 20-40 秒...';
+            } else if (platform === 'wechat') {
+                // 微信模式
+                searchModeGroup.style.display = 'block';
+                document.getElementById('search-mode').value = 'keyword';
+                toggleSearchMode();
+                manualInputGroup.style.display = 'none';
+                maxResultsGroup.style.display = 'block';
+                searchBtn.querySelector('.btn-text').textContent = '🔍 搜索文章';
+                searchHint.textContent = '正在启动浏览器搜索，预计需要 30-60 秒，请耐心等待...';
+            } else {
+                // 知乎模式
+                searchModeGroup.style.display = 'block';
+                toggleSearchMode();
+                manualInputGroup.style.display = 'none';
+                maxResultsGroup.style.display = 'block';
+                searchBtn.querySelector('.btn-text').textContent = '🔍 搜索文章';
+                searchHint.textContent = '正在启动浏览器搜索，预计需要 30-60 秒，请耐心等待...';
+            }
+        }
+
+        function displayArticles(articles) {
+            const container = document.getElementById('articles-list');
+            const countEl = document.getElementById('articles-count');
+
+            countEl.textContent = `找到 ${articles.length} 篇文章`;
+
+            container.innerHTML = articles.map((article, index) => `
+                <div class="article-card" onclick="selectArticle(${index})" data-index="${index}">
+                    <div class="article-header">
+                        <span class="article-type">${article.type}</span>
+                        ${article.author ? `<span class="article-author">${escapeHtml(article.author)}</span>` : ''}
+                        <span class="article-id">#${article.id}</span>
+                    </div>
+                    <h3 class="article-title">${escapeHtml(article.title)}</h3>
+                    ${article.summary ? `<p class="article-summary">${escapeHtml(article.summary)}</p>` : ''}
+                    <div class="article-url">
+                        <a href="${escapeHtml(article.source_url)}" target="_blank" onclick="event.stopPropagation()">
+                            ${escapeHtml(article.source_url)}
+                        </a>
+                    </div>
+                </div>
+            `).join('');
+
+            window.articlesData = articles;
+        }
+
+        async function selectArticle(index) {
+            const articles = document.querySelectorAll('.article-card');
+            articles.forEach(el => el.classList.remove('selected'));
+
+            const selected = document.querySelector(`.article-card[data-index="${index}"]`);
+            if (selected) selected.classList.add('selected');
+
+            selectedArticle = window.articlesData[index];
+
+            const sourcePlatform = document.getElementById('source-platform').value;
+            if (sourcePlatform === 'zhihu' && selectedArticle.type === '知乎问答') {
+                await getAnswers(selectedArticle.source_url);
+            } else {
+                // 显示模式选择界面
+                showModeSelection();
+            }
+        }
+
+        function showModeSelection() {
+            // 显示选中的文章标题
+            document.getElementById('selected-article-title').textContent =
+                '已选择：' + (selectedArticle.title || '未命名文章');
+            showSection(document.getElementById('mode-section'));
+        }
+
+        function selectMode(mode) {
+            if (mode === 'normal') {
+                // 普通改写
+                processArticle();
+            } else {
+                // 深度生成
+                showSection(document.getElementById('deep-profile-section'));
+            }
+        }
+
+        function backToModeSelection() {
+            showSection(document.getElementById('mode-section'));
+        }
+
+        function backToArticles() {
+            showSection(document.getElementById('articles-section'));
+        }
+
+        // ========== 深度生成模式函数 ==========
+
+        let deepSessionId = null;
+
+        async function startDeepMode() {
+            const userInput = document.getElementById('deep-user-input').value.trim();
+            if (!userInput) {
+                showNotification('请填写改写需求描述', 'error');
+                return;
+            }
+
+            const targetPlatform = document.getElementById('target-platform').value;
+
+            // 显示处理中状态
+            document.getElementById('processing-title').textContent = '正在生成大纲...';
+            document.getElementById('progress-status').textContent = '调用 AI 模型提取画像并生成大纲';
+            showSection(document.getElementById('processing-section'));
+
+            try {
+                const response = await fetch('/api/deep_mode/create_session', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        article_id: selectedArticle.url || selectedArticle.title,
+                        source_article: {
+                            title: selectedArticle.title,
+                            text: selectedArticle.text || selectedArticle.summary,
+                        },
+                        user_input: userInput,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showSection(document.getElementById('deep-profile-section'));
+                    showNotification('创建失败：' + data.error, 'error');
+                    return;
+                }
+
+                deepSessionId = data.session_id;
+
+                // 显示大纲确认界面
+                document.getElementById('deep-outline-content').textContent = data.outline;
+                document.getElementById('deep-profile-info').textContent =
+                    `语气：${data.profile.tone || '未指定'}\n目标读者：${data.profile.target_audience || '未指定'}\n侧重点：${data.profile.focus_point || '未指定'}`;
+                document.getElementById('deep-outline-version').textContent = data.outline_version;
+
+                showSection(document.getElementById('deep-outline-section'));
+                showNotification('大纲已生成！', 'success');
+
+            } catch (error) {
+                showSection(document.getElementById('deep-profile-section'));
+                showNotification('请求失败：' + error.message, 'error');
+            }
+        }
+
+        function showModifyInput() {
+            document.getElementById('deep-modify-group').style.display = 'block';
+            document.getElementById('deep-submit-modify-btn').style.display = 'inline-block';
+            document.getElementById('deep-modify-btn').style.display = 'none';
+        }
+
+        async function submitOutlineModification() {
+            const modification = document.getElementById('deep-modify-input').value.trim();
+            if (!modification) {
+                showNotification('请填写修改意见', 'error');
+                return;
+            }
+
+            document.getElementById('deep-outline-status').textContent = '正在修改大纲...';
+            document.getElementById('deep-outline-status').style.color = '#FF9800';
+
+            try {
+                const response = await fetch('/api/deep_mode/outline_action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: deepSessionId,
+                        action: 'modify',
+                        modification: modification,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showNotification('修改失败：' + data.error, 'error');
+                    return;
+                }
+
+                // 更新大纲显示
+                document.getElementById('deep-outline-content').textContent = data.outline;
+                document.getElementById('deep-outline-version').textContent = data.outline_version;
+                document.getElementById('deep-outline-status').textContent = '大纲已修改，请确认';
+                document.getElementById('deep-outline-status').style.color = '#4CAF50';
+
+                // 隐藏修改输入框
+                document.getElementById('deep-modify-group').style.display = 'none';
+                document.getElementById('deep-submit-modify-btn').style.display = 'none';
+                document.getElementById('deep-modify-btn').style.display = 'inline-block';
+                document.getElementById('deep-modify-input').value = '';
+
+                showNotification('大纲已更新（版本 ' + data.outline_version + '）', 'success');
+
+            } catch (error) {
+                showNotification('请求失败：' + error.message, 'error');
+            }
+        }
+
+        async function acceptOutline() {
+            document.getElementById('deep-outline-status').textContent = '正在生成全文...';
+            document.getElementById('deep-outline-status').style.color = '#FF9800';
+
+            try {
+                const response = await fetch('/api/deep_mode/outline_action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: deepSessionId,
+                        action: 'accept',
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showNotification('生成失败：' + data.error, 'error');
+                    return;
+                }
+
+                // 显示全文预览
+                document.getElementById('deep-content-preview').textContent = data.draft;
+                document.getElementById('deep-content-status').textContent = '全文已生成，请确认定稿';
+
+                showSection(document.getElementById('deep-content-section'));
+                showNotification('全文已生成！', 'success');
+
+            } catch (error) {
+                showNotification('请求失败：' + error.message, 'error');
+            }
+        }
+
+        async function finalizeDeepSession() {
+            try {
+                const response = await fetch('/api/deep_mode/finalize', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: deepSessionId,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showNotification('定稿失败：' + data.error, 'error');
+                    return;
+                }
+
+                showNotification('已定稿保存！Session ID: ' + deepSessionId, 'success');
+
+                // 显示成功提示，返回文章列表
+                setTimeout(() => {
+                    backToArticles();
+                }, 2000);
+
+            } catch (error) {
+                showNotification('请求失败：' + error.message, 'error');
+            }
+        }
+
+        function backToOutline() {
+            showSection(document.getElementById('deep-outline-section'));
+        }
+
+        async function getAnswers(questionUrl) {
+            const answersSection = document.getElementById('answers-section');
+            const answersInfo = document.getElementById('answers-info');
+            const answersList = document.getElementById('answers-list');
+
+            answersInfo.textContent = '正在加载回答列表...';
+            answersList.innerHTML = '<div class="loading-spinner"><span class="spinner"></span> 加载中...</div>';
+            showSection(answersSection);
+
+            try {
+                const response = await fetch('/api/get_answers', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        question_url: questionUrl,
+                        max_answers: 10,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.answers.length > 0) {
+                    window.currentQuestionUrl = questionUrl;
+                    window.currentQuestionTitle = data.question_title;
+                    displayAnswers(data.answers);
+                    answersInfo.textContent = `问题: ${data.question_title} | 共 ${data.answers.length} 个回答（已筛选字数≥300，按点赞排序）`;
+                } else {
+                    answersInfo.textContent = data.error || '未找到符合条件的回答';
+                    answersList.innerHTML = '';
+                }
+            } catch (error) {
+                answersInfo.textContent = '加载失败: ' + error.message;
+                answersList.innerHTML = '';
+            }
+        }
+
+        function displayAnswers(answers) {
+            const answersList = document.getElementById('answers-list');
+            window.answersData = answers;
+
+            answersList.innerHTML = answers.map((answer, index) => `
+                <div class="answer-card" data-index="${index}">
+                    <div class="answer-checkbox">
+                        <input type="checkbox" id="answer-${index}" onchange="updateMergeButton()">
+                    </div>
+                    <div class="answer-content" onclick="toggleAnswerSelect(${index})">
+                        <div class="answer-meta-row">
+                            <span class="answer-likes">
+                                <span class="meta-icon">👍</span>
+                                <span class="meta-value">${formatLikes(answer.likes)}</span>
+                            </span>
+                            <span class="answer-char">
+                                <span class="meta-icon">📝</span>
+                                <span class="meta-value">${answer.char_count}字</span>
+                            </span>
+                            ${answer.author ? `
+                                <span class="answer-author">
+                                    <span class="meta-icon">👤</span>
+                                    <span class="meta-value">${escapeHtml(answer.author)}</span>
+                                </span>
+                            ` : ''}
+                        </div>
+                        <div class="answer-text-preview">${escapeHtml(answer.text.substring(0, 200))}...</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function formatLikes(likes) {
+            if (likes >= 10000) {
+                return (likes / 10000).toFixed(1) + '万';
+            }
+            return likes || '0';
+        }
+
+        function toggleAnswerSelect(index) {
+            const checkbox = document.getElementById(`answer-${index}`);
+            checkbox.checked = !checkbox.checked;
+            updateMergeButton();
+        }
+
+        function updateMergeButton() {
+            const checkboxes = document.querySelectorAll('.answer-checkbox input:checked');
+            document.getElementById('merge-btn').disabled = checkboxes.length === 0;
+        }
+
+        async function processArticle() {
+            if (!selectedArticle) {
+                alert('请先选择文章');
+                return;
+            }
+
+            const sourcePlatform = document.getElementById('source-platform').value;
+            const targetPlatform = document.getElementById('target-platform').value;
+
+            document.getElementById('processing-title').textContent = `正在处理: ${selectedArticle.title}`;
+            showSection(processingSection);
+
+            let progress = 0;
+            const progressFill = document.getElementById('progress-fill');
+            const progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 10, 90);
+                progressFill.style.width = progress + '%';
+            }, 500);
+
+            try {
+                const response = await fetch('/api/process', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        source_url: selectedArticle.source_url,
+                        source_platform: sourcePlatform,
+                        target_platform: targetPlatform,
+                        generate_video: false,
+                    }),
+                });
+
+                const data = await response.json();
+
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+
+                if (data.success) {
+                    displayResult(data);
+                    setTimeout(() => showSection(resultSection), 500);
+                } else {
+                    showError(data.error || '处理失败');
+                }
+            } catch (error) {
+                clearInterval(progressInterval);
+                showError('处理请求失败: ' + error.message);
+            }
+        }
+
+        async function mergeSelectedAnswers() {
+            const checkboxes = document.querySelectorAll('.answer-checkbox input:checked');
+            const selectedIndexes = Array.from(checkboxes).map(cb => parseInt(cb.id.replace('answer-', '')));
+
+            if (selectedIndexes.length === 0) {
+                alert('请选择至少一个回答');
+                return;
+            }
+
+            const answerUrls = selectedIndexes.map(i => window.answersData[i].source_url);
+            const targetPlatform = document.getElementById('target-platform').value;
+
+            document.getElementById('processing-title').textContent = `正在合并 ${selectedIndexes.length} 个回答并洗稿...`;
+            showSection(processingSection);
+
+            let progress = 0;
+            const progressFill = document.getElementById('progress-fill');
+            const progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 10, 90);
+                progressFill.style.width = progress + '%';
+            }, 500);
+
+            try {
+                const response = await fetch('/api/process_multi', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        question_url: window.currentQuestionUrl,
+                        answer_urls: answerUrls,
+                        source_platform: 'zhihu',
+                        target_platform: targetPlatform,
+                        generate_video: false,
+                    }),
+                });
+
+                const data = await response.json();
+
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+
+                if (data.success) {
+                    displayResult(data);
+                    setTimeout(() => showSection(resultSection), 500);
+                } else {
+                    showError(data.error || '处理失败');
+                }
+            } catch (error) {
+                clearInterval(progressInterval);
+                showError('处理请求失败: ' + error.message);
+            }
+        }
+
+        function backToArticles() {
+            showSection(articlesSection);
+        }
+
+        function displayResult(data) {
+            currentScriptPath = data.script_path || "";
+            const rawContent = data.script_content || data.final_script || '无内容';
+
+            document.getElementById('result-script-path').textContent = currentScriptPath || '无';
+            document.getElementById('result-video-path').textContent = data.video_path || '无';
+
+            const videoContainer = document.getElementById('video-path-container');
+            const targetPlatform = document.getElementById('target-platform').value;
+            videoContainer.style.display = (targetPlatform === 'zhihu_article' || targetPlatform === 'wechat_article') ? 'none' : 'inline';
+
+            // 显示/隐藏"生成AI视频"按钮
+            const generateVideoBtn = document.getElementById('generate-video-btn');
+            // 如果已有视频路径，隐藏按钮
+            if (data.video_path && data.video_path !== '无' && data.video_path !== '') {
+                generateVideoBtn.style.display = 'none';
+            } else {
+                generateVideoBtn.style.display = 'inline-block';
+            }
+
+            // 重置视频生成区域
+            document.getElementById('video-generation-section').style.display = 'none';
+            document.getElementById('video-result-section').style.display = 'none';
+
+            const originalEl = document.getElementById('original-content');
+            const originalMeta = document.getElementById('original-meta');
+            const originalTitle = data.original_title || '';
+            const originalText = data.original_text || '';
+            const originalAuthor = data.original_author || '';
+
+            // 保存原标题用于下载
+            currentOriginalTitle = originalTitle;
+
+            let originalDisplay = '';
+            if (originalTitle) {
+                originalDisplay += `【标题】${originalTitle}\n\n`;
+            }
+            if (originalAuthor) {
+                originalMeta.textContent = `来源: ${originalAuthor}`;
+            } else {
+                originalMeta.textContent = '';
+            }
+            if (data.answer_count) {
+                originalMeta.textContent += ` | 合并 ${data.answer_count} 个回答`;
+            }
+            originalDisplay += originalText || '无原文内容';
+            originalEl.textContent = originalDisplay;
+
+            // 解析改写内容，分离正文和评语
+            const parsed = parseScriptContent(rawContent);
+
+            // currentScriptContent 只存正文（用于保存和生成视频）
+            currentScriptContent = parsed.body;
+
+            const contentEl = document.getElementById('result-script-content');
+            const editorEl = document.getElementById('result-script-editor');
+            const reviewEl = document.getElementById('review-content');
+            const reviewSection = document.getElementById('review-section');
+
+            // 正文区域只显示文章正文
+            contentEl.textContent = parsed.body;
+            editorEl.value = parsed.body;  // 编辑器也只编辑正文
+
+            // 评语区域显示评语
+            if (parsed.review) {
+                reviewEl.textContent = parsed.review;
+                reviewSection.style.display = 'block';
+            } else {
+                reviewSection.style.display = 'none';
+            }
+
+            contentEl.style.display = 'block';
+            editorEl.style.display = 'none';
+            document.getElementById('edit-btn').style.display = 'inline-block';
+            document.getElementById('save-btn').style.display = 'none';
+            document.getElementById('cancel-btn').style.display = 'none';
+        }
+
+        // 解析文案内容，分离正文和评语
+        function parseScriptContent(content) {
+            let body = content;
+            let review = '';
+
+            // 查找审核评价部分 [审核评价：...]
+            const reviewMatch = content.match(/\[审核评价[：:]\s*([^\]]+)\]/);
+            if (reviewMatch) {
+                review = reviewMatch[1].trim();
+                // 从正文中移除评语部分
+                body = content.replace(/\[审核评价[：:][^\]]+\]/, '').trim();
+            }
+
+            // 移除头部信息（来源、目标平台、分隔线）
+            body = body.replace(/^={60}\n来源:[^\n]+\n目标平台:[^\n]+\n={60}\n/, '').trim();
+
+            // 移除【最终脚本】标记
+            body = body.replace(/【最终脚本】\n?/, '').trim();
+
+            return { body, review };
+        }
+
+        function toggleEdit() {
+            const contentEl = document.getElementById('result-script-content');
+            const editorEl = document.getElementById('result-script-editor');
+            const editBtn = document.getElementById('edit-btn');
+            const saveBtn = document.getElementById('save-btn');
+            const cancelBtn = document.getElementById('cancel-btn');
+
+            contentEl.style.display = 'none';
+            editorEl.style.display = 'block';
+            editorEl.value = currentScriptContent;
+            editorEl.focus();
+
+            editBtn.style.display = 'none';
+            saveBtn.style.display = 'inline-block';
+            cancelBtn.style.display = 'inline-block';
+        }
+
+        function saveEdit() {
+            const editorEl = document.getElementById('result-script-editor');
+            const contentEl = document.getElementById('result-script-content');
+            const editBtn = document.getElementById('edit-btn');
+            const saveBtn = document.getElementById('save-btn');
+            const cancelBtn = document.getElementById('cancel-btn');
+
+            currentScriptContent = editorEl.value;
+            contentEl.textContent = currentScriptContent;
+
+            contentEl.style.display = 'block';
+            editorEl.style.display = 'none';
+            editBtn.style.display = 'inline-block';
+            saveBtn.style.display = 'none';
+            cancelBtn.style.display = 'none';
+
+            showNotification('文案已修改', 'success');
+        }
+
+        function cancelEdit() {
+            const contentEl = document.getElementById('result-script-content');
+            const editorEl = document.getElementById('result-script-editor');
+            const editBtn = document.getElementById('edit-btn');
+            const saveBtn = document.getElementById('save-btn');
+            const cancelBtn = document.getElementById('cancel-btn');
+
+            contentEl.style.display = 'block';
+            editorEl.style.display = 'none';
+            editBtn.style.display = 'inline-block';
+            saveBtn.style.display = 'none';
+            cancelBtn.style.display = 'none';
+        }
+
+        function confirmPublish() {
+            if (confirm('确认要保存这篇内容吗？')) {
+                saveContentToFile();
+            }
+        }
+
+        function downloadContent() {
+            // 下载改写内容到本地
+            if (!currentScriptContent) {
+                showNotification('没有可下载的内容', 'error');
+                return;
+            }
+
+            // 创建文件名
+            const timestamp = new Date().toISOString().slice(0, 10);
+            const title = currentOriginalTitle || '改写内容';
+            const filename = `${title.slice(0, 20)}_${timestamp}.txt`;
+
+            // 创建 Blob 并下载
+            const blob = new Blob([currentScriptContent], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+
+            // 清理
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showNotification(`已下载: ${filename}`, 'success');
+        }
+
+        // ===== 数字人视频下载 =====
+        function downloadDigitalHumanVideo() {
+            if (!currentVideoPath) {
+                showNotification('没有可下载的视频', 'error');
+                return;
+            }
+
+            // 通过 API 下载视频
+            showNotification('正在准备下载...', 'info');
+
+            // 创建下载链接
+            const downloadUrl = `/api/download_file?path=${encodeURIComponent(currentVideoPath)}&type=video`;
+
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = `digital_human_${new Date().toISOString().slice(0, 10)}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            showNotification('视频下载已开始', 'success');
+        }
+
+        async function downloadTaskDir() {
+            if (!currentTaskDir) {
+                showNotification('没有可下载的任务目录', 'error');
+                return;
+            }
+
+            showNotification('正在打包任务目录...', 'info');
+
+            try {
+                const response = await fetch(`/api/download_task_dir?task_dir=${encodeURIComponent(currentTaskDir)}`);
+                const data = await response.json();
+
+                if (data.success && data.download_url) {
+                    // 开始下载
+                    const a = document.createElement('a');
+                    a.href = data.download_url;
+                    a.download = data.filename || 'task_files.zip';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    showNotification('任务目录下载已开始', 'success');
+                } else {
+                    showNotification('打包失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                showNotification('下载请求失败: ' + error.message, 'error');
+            }
+        }
+
+        async function saveContentToFile() {
+            try {
+                const response = await fetch('/api/save', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        script_path: currentScriptPath,
+                        content: currentScriptContent,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showNotification('文案已保存: ' + data.script_path, 'success');
+                } else {
+                    showNotification('保存失败: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showNotification('保存请求失败: ' + error.message, 'error');
+            }
+        }
+
+        // ===== 数字人头像选择 =====
+        function selectAvatar(avatarId) {
+            // 更新选中状态
+            selectedAvatarUrl = AVATAR_URLS[avatarId] || AVATAR_URLS["default1"];
+
+            // 更新 UI 显示
+            document.querySelectorAll('.avatar-option').forEach(el => {
+                el.style.borderColor = '#ddd';
+                el.style.backgroundColor = '';
+            });
+
+            const selectedEl = document.querySelector(`.avatar-option[data-avatar="${avatarId}"]`);
+            if (selectedEl) {
+                selectedEl.style.borderColor = '#4CAF50';
+                selectedEl.style.backgroundColor = '#e8f5e9';
+            }
+
+            // 更新提示信息
+            const names = { "default1": "默认形象 1", "default2": "默认形象 2", "default3": "默认形象 3" };
+            document.getElementById('selected-avatar-info').textContent = `当前选择：${names[avatarId] || '自定义图片'}`;
+
+            showNotification(`已选择：${names[avatarId]}`, 'success');
+        }
+
+        // ===== 数字人语音选择 =====
+        function selectVoice(voiceId) {
+            // 更新选中状态
+            selectedVoice = voiceId;
+
+            // 更新 UI 显示
+            document.querySelectorAll('.voice-option').forEach(el => {
+                el.style.borderColor = '#ddd';
+                el.style.backgroundColor = '';
+            });
+
+            const selectedEl = document.querySelector(`.voice-option[data-voice="${voiceId}"]`);
+            if (selectedEl) {
+                selectedEl.style.borderColor = '#4CAF50';
+                selectedEl.style.backgroundColor = '#e8f5e9';
+            }
+
+            // 更新提示信息
+            document.getElementById('selected-voice-info').textContent = `当前选择：${VOICE_NAMES[voiceId] || '未知语音'}`;
+
+            showNotification(`已选择：${VOICE_NAMES[voiceId]}`, 'success');
+        }
+
+        async function uploadCustomAvatar(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            // 显示上传提示
+            showNotification('正在上传图片...', 'info');
+            document.getElementById('selected-avatar-info').textContent = '正在上传自定义图片...';
+
+            try {
+                // 上传到 OSS
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const response = await fetch('/api/upload_image', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.url) {
+                    selectedAvatarUrl = data.url;
+
+                    // 更新 UI
+                    document.querySelectorAll('.avatar-option').forEach(el => {
+                        el.style.borderColor = '#ddd';
+                        el.style.backgroundColor = '';
+                    });
+
+                    document.getElementById('selected-avatar-info').textContent = `当前选择：自定义图片 (${file.name})`;
+                    showNotification('图片上传成功！', 'success');
+                } else {
+                    showNotification('上传失败: ' + (data.error || '未知错误'), 'error');
+                    document.getElementById('selected-avatar-info').textContent = '上传失败，请重试';
+                }
+            } catch (error) {
+                showNotification('上传请求失败: ' + error.message, 'error');
+                document.getElementById('selected-avatar-info').textContent = '上传失败，请重试';
+            }
+
+            // 清空 input，允许重新选择相同文件
+            event.target.value = '';
+        }
+
+        function showNotification(message, type) {
+            const existing = document.querySelector('.notification');
+            if (existing) existing.remove();
+
+            const notification = document.createElement('div');
+            notification.className = `notification notification-${type}`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+
+            setTimeout(() => notification.classList.add('show'), 10);
+
+            setTimeout(() => {
+                notification.classList.remove('show');
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+
+        async function generateVideoFromResult() {
+            // 使用改写后的内容生成视频
+            // 先检查编辑器是否正在编辑，如果是就用编辑器的当前值
+            const editorEl = document.getElementById('result-script-editor');
+            let content;
+            if (editorEl && editorEl.style.display !== 'none') {
+                content = editorEl.value;
+                currentScriptContent = content;  // 同步更新
+            } else {
+                content = currentScriptContent;
+            }
+            const targetPlatform = document.getElementById('target-platform').value;
+
+            if (!content || content === '无内容') {
+                showError('没有可用的内容来生成视频');
+                return;
+            }
+
+            // 显示视频生成进度
+            const videoSection = document.getElementById('video-generation-section');
+            const progressFill = document.getElementById('video-progress-fill');
+            const progressStatus = document.getElementById('video-progress-status');
+
+            videoSection.style.display = 'block';
+            document.getElementById('video-result-section').style.display = 'none';
+
+            // 禁用按钮
+            const generateBtn = document.getElementById('generate-video-btn');
+            generateBtn.disabled = true;
+            generateBtn.textContent = '⏳ 生成中...';
+
+            // 进度动画
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 5, 90);
+                progressFill.style.width = progress + '%';
+            }, 1000);
+
+            try {
+                const response = await fetch('/api/generate_video', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        content: content,
+                        target_platform: targetPlatform,
+                    }),
+                });
+
+                const data = await response.json();
+
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+
+                if (data.success) {
+                    // 显示视频结果
+                    document.getElementById('video-generation-section').style.display = 'none';
+                    document.getElementById('video-result-section').style.display = 'block';
+                    document.getElementById('generated-video-path').textContent = data.video_path || '生成成功';
+
+                    // 隐藏按钮
+                    generateBtn.style.display = 'none';
+
+                    showNotification('视频生成成功！', 'success');
+                } else {
+                    progressStatus.textContent = '生成失败: ' + (data.error || '未知错误');
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '🎬 生成AI视频';
+                    showNotification('视频生成失败', 'error');
+                }
+            } catch (error) {
+                clearInterval(progressInterval);
+                progressStatus.textContent = '请求失败: ' + error.message;
+                generateBtn.disabled = false;
+                generateBtn.textContent = '🎬 生成AI视频';
+                showNotification('请求失败: ' + error.message, 'error');
+            }
+        }
+
+        async function generateDigitalHumanFromResult() {
+            // 使用改写后的内容生成数字人视频
+            // 先检查编辑器是否正在编辑，如果是就用编辑器的当前值
+            const editorEl = document.getElementById('result-script-editor');
+            let content;
+            if (editorEl && editorEl.style.display !== 'none') {
+                content = editorEl.value;
+                currentScriptContent = content;  // 同步更新
+            } else {
+                content = currentScriptContent;
+            }
+
+            if (!content || content === '无内容') {
+                showError('没有可用的内容来生成数字人视频');
+                return;
+            }
+
+            // 显示数字人视频生成进度
+            const digitalHumanSection = document.getElementById('digital-human-section');
+            const progressFill = document.getElementById('digital-human-progress-fill');
+            const progressStatus = document.getElementById('digital-human-progress-status');
+
+            digitalHumanSection.style.display = 'block';
+            document.getElementById('digital-human-result-section').style.display = 'none';
+
+            // 禁用按钮
+            const generateBtn = document.getElementById('generate-digital-human-btn');
+            generateBtn.disabled = true;
+            generateBtn.textContent = '⏳ 创建任务...';
+
+            // 进度动画
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 2, 95);
+                progressFill.style.width = progress + '%';
+            }, 3000);
+
+            try {
+                // Step 1: 创建任务
+                progressStatus.textContent = '正在创建视频生成任务...';
+                const createResponse = await fetch('/api/generate_digital_human', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        content: content,
+                        avatar_url: selectedAvatarUrl,  // 传递选择的头像 URL
+                        voice: selectedVoice,  // 传递选择的语音
+                    }),
+                });
+
+                const createData = await createResponse.json();
+
+                if (!createData.success) {
+                    clearInterval(progressInterval);
+                    progressStatus.textContent = '创建任务失败: ' + (createData.error || '未知错误');
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '🧑 生成数字人视频';
+                    showNotification('创建任务失败', 'error');
+                    return;
+                }
+
+                const taskId = createData.task_id;
+                progressStatus.textContent = `任务已创建 (ID: ${taskId})，正在后台生成视频...`;
+                generateBtn.textContent = '⏳ 生成中 (轮询状态)';
+                showNotification('任务已创建，请等待生成完成', 'info');
+
+                // Step 2: 轮询查询任务状态
+                let pollCount = 0;
+                const maxPolls = 120; // 最多轮询 120 次（约 30 分钟）
+                const pollInterval = 15000; // 每 15 秒查询一次
+
+                while (pollCount < maxPolls) {
+                    await new Promise(resolve => setTimeout(resolve, pollInterval));
+                    pollCount++;
+
+                    const statusResponse = await fetch(`/api/task_status/${taskId}`);
+                    const statusData = await statusResponse.json();
+
+                    if (!statusData.success) {
+                        continue; // 继续轮询
+                    }
+
+                    const status = statusData.status;
+                    progressStatus.textContent = `状态: ${status} (已等待 ${pollCount * 15} 秒)`;
+
+                    if (status === 'completed') {
+                        clearInterval(progressInterval);
+                        progressFill.style.width = '100%';
+
+                        // 保存视频路径和任务目录（用于下载）
+                        currentVideoPath = statusData.video_path || '';
+                        currentTaskDir = statusData.task_dir || '';
+
+                        // 显示结果
+                        digitalHumanSection.style.display = 'none';
+                        document.getElementById('digital-human-result-section').style.display = 'block';
+                        document.getElementById('digital-human-video-path').textContent = currentVideoPath || '生成成功';
+                        document.getElementById('digital-human-task-dir').textContent = currentTaskDir || '无';
+
+                        // 显示下载按钮
+                        document.getElementById('download-video-btn').style.display = currentVideoPath ? 'inline-block' : 'none';
+                        document.getElementById('download-task-btn').style.display = currentTaskDir ? 'inline-block' : 'none';
+
+                        generateBtn.style.display = 'none';
+                        showNotification('数字人视频生成成功！', 'success');
+                        return;
+                    }
+
+                    if (status === 'failed') {
+                        clearInterval(progressInterval);
+                        progressStatus.textContent = '生成失败: ' + (statusData.error || '未知错误');
+                        generateBtn.disabled = false;
+                        generateBtn.textContent = '🧑 生成数字人视频';
+                        showNotification('数字人视频生成失败', 'error');
+                        return;
+                    }
+
+                    // 继续轮询 (pending 或 running)
+                }
+
+                // 超过最大轮询次数
+                clearInterval(progressInterval);
+                progressStatus.textContent = `轮询超时（已等待 ${pollCount * 15} 秒），请检查任务状态文件`;
+                generateBtn.disabled = false;
+                generateBtn.textContent = '🧑 生成数字人视频';
+                showNotification('轮询超时，视频可能仍在生成中', 'warning');
+
+            } catch (error) {
+                clearInterval(progressInterval);
+                progressStatus.textContent = '请求失败: ' + error.message;
+                generateBtn.disabled = false;
+                generateBtn.textContent = '🧑 生成数字人视频';
+                showNotification('请求失败: ' + error.message, 'error');
+            }
+        }
+
+        function resetWorkflow() {
+            selectedArticle = null;
+            window.articlesData = [];
+            showSection(null);
+            document.getElementById('articles-list').innerHTML = '';
+            document.getElementById('result-script-content').textContent = '';
+            document.getElementById('review-section').style.display = 'none';
+            document.getElementById('review-content').textContent = '';
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
