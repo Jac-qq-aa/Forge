@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.requests import Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,6 +26,7 @@ from forge.deep_mode import (
 )
 from forge.deep_mode.session_manager import get_session_manager
 from forge.deep_mode.agents.plan_execute_agent import run_plan_execute
+from forge.deep_mode.websocket_handler import handle_websocket_connection
 
 # Setup logging
 logging.basicConfig(
@@ -833,6 +834,12 @@ async def api_list_sessions(article_id: str = None, stage: str = None):
         ],
         "count": len(sessions),
     }
+
+
+@app.websocket("/ws/deep_mode/{session_id}")
+async def deep_mode_websocket(websocket: WebSocket, session_id: str):
+    """深度生成实时对话通道（Phase 2）。"""
+    await handle_websocket_connection(websocket, session_id)
 
 
 if __name__ == "__main__":

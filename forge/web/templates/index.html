@@ -196,8 +196,42 @@
             </div>
 
             <div style="display: flex; gap: 10px;">
-                <button id="deep-finalize-btn" class="btn btn-primary" onclick="finalizeDeepSession()">✅ 定稿保存</button>
+                <button id="deep-start-chat-btn" class="btn btn-primary" onclick="startDeepChat()">💬 进入微调对话</button>
+                <button id="deep-finalize-btn" class="btn btn-secondary" onclick="finalizeDeepSession()">✅ 定稿保存</button>
                 <button class="btn btn-secondary" onclick="backToOutline()">← 返回修改大纲</button>
+            </div>
+        </section>
+
+        <!-- Step 2.9: 深度生成 - 微调对话 -->
+        <section id="deep-chat-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2.9</span>
+                <h2>微调对话</h2>
+            </div>
+            <p class="hint">全文已生成，您可以通过对话微调内容</p>
+
+            <!-- 对话历史 -->
+            <div id="deep-chat-history" style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 15px; max-height: 300px; overflow-y: auto;">
+                <div class="chat-message agent-message" style="padding: 10px; margin-bottom: 10px; background: #e8f5e9; border-radius: 8px;">
+                    <p>全文已生成完成！您可以提出修改意见，比如：</p>
+                    <ul style="margin-left: 20px; color: #666;">
+                        <li>"把第二段改得更通俗一点"</li>
+                        <li>"整体语气太严肃了，改轻松点"</li>
+                        <li>"查一下'360度评估'的定义"</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- 输入框 -->
+            <div style="display: flex; gap: 10px;">
+                <input type="text" id="deep-chat-input" placeholder="输入修改意见..." style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 8px;">
+                <button class="btn btn-primary" onclick="sendDeepChatMessage()">发送</button>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button id="deep-finalize-chat-btn" class="btn btn-primary" onclick="finalizeFromChat()">✅ 定稿保存</button>
+                <button class="btn btn-secondary" onclick="backToContentPreview()">← 返回预览</button>
             </div>
         </section>
 
@@ -1101,6 +1135,108 @@
 
         function backToOutline() {
             showSection(document.getElementById('deep-outline-section'));
+        }
+
+        // ========== WebSocket 微调对话函数 ==========
+
+        let deepWebSocket = null;
+
+        function startDeepChat() {
+            // 初始化 WebSocket
+            const wsUrl = `ws://${location.host}/ws/deep_mode/${deepSessionId}`;
+            deepWebSocket = new WebSocket(wsUrl);
+
+            deepWebSocket.onopen = function() {
+                console.log('[DeepChat] WebSocket connected');
+            };
+
+            deepWebSocket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleDeepChatMessage(data);
+            };
+
+            deepWebSocket.onerror = function(error) {
+                console.error('[DeepChat] WebSocket error:', error);
+                showNotification('WebSocket 连接失败', 'error');
+            };
+
+            deepWebSocket.onclose = function() {
+                console.log('[DeepChat] WebSocket closed');
+            };
+
+            // Enter 键发送
+            document.getElementById('deep-chat-input').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendDeepChatMessage();
+                }
+            });
+
+            showSection(document.getElementById('deep-chat-section'));
+        }
+
+        function handleDeepChatMessage(data) {
+            if (data.type === 'stage_update') {
+                // 初始状态更新
+                if (data.tuning_history && data.tuning_history.length > 0) {
+                    data.tuning_history.forEach(msg => addChatMessage(msg.role, msg.content));
+                }
+            } else if (data.type === 'tuning_response') {
+                // Agent 响应
+                addChatMessage('agent', data.content);
+                document.getElementById('deep-chat-input').value = '';
+            } else if (data.type === 'finalized') {
+                // 定稿完成
+                showNotification('已定稿保存！', 'success');
+                setTimeout(() => backToArticles(), 2000);
+            } else if (data.type === 'error') {
+                showNotification('错误：' + data.message, 'error');
+            }
+        }
+
+        function addChatMessage(role, content) {
+            const history = document.getElementById('deep-chat-history');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = role === 'user' ? 'chat-message user-message' : 'chat-message agent-message';
+            msgDiv.style.cssText = 'padding: 10px; margin-bottom: 10px; border-radius: 8px;';
+            msgDiv.style.background = role === 'user' ? '#fff3e0' : '#e8f5e9';
+            msgDiv.innerHTML = `<strong>${role === 'user' ? '👤 您' : '🤖 Agent'}：</strong><p style="white-space: pre-wrap;">${escapeHtml(content)}</p>`;
+            history.appendChild(msgDiv);
+            history.scrollTop = history.scrollHeight;
+        }
+
+        function sendDeepChatMessage() {
+            const input = document.getElementById('deep-chat-input');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // 显示用户消息
+            addChatMessage('user', message);
+
+            // 发送到 WebSocket
+            if (deepWebSocket && deepWebSocket.readyState === WebSocket.OPEN) {
+                deepWebSocket.send(JSON.stringify({
+                    type: 'tuning_message',
+                    content: message
+                }));
+            } else {
+                showNotification('WebSocket 未连接', 'error');
+            }
+        }
+
+        function finalizeFromChat() {
+            if (deepWebSocket && deepWebSocket.readyState === WebSocket.OPEN) {
+                deepWebSocket.send(JSON.stringify({type: 'finalize'}));
+            }
+        }
+
+        function backToContentPreview() {
+            if (deepWebSocket) {
+                deepWebSocket.close();
+                deepWebSocket = null;
+            }
+            showSection(document.getElementById('deep-content-section'));
         }
 
         async function getAnswers(questionUrl) {
