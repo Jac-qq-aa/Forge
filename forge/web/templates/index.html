@@ -211,7 +211,10 @@
             <div id="answers-list" class="answers-list"></div>
             <div class="answers-actions">
                 <button id="merge-btn" class="btn btn-primary" onclick="mergeSelectedAnswers()" disabled>
-                    ✅ 合并选中回答洗稿
+                    ⚡ 合并改写（快速）
+                </button>
+                <button id="deep-merge-btn" class="btn btn-secondary" onclick="showDeepModeFromAnswers()" disabled style="background: #e8f5e9; border-color: #4CAF50;">
+                    🌟 深度生成
                 </button>
                 <button class="btn btn-secondary" onclick="backToArticles()">
                     ← 返回文章列表
@@ -895,6 +898,9 @@
         }
 
         function backToArticles() {
+            // 清理深度生成标记
+            window.deepModeFromAnswers = false;
+            window.selectedAnswerIndexes = null;
             showSection(document.getElementById('articles-section'));
         }
 
@@ -911,6 +917,28 @@
 
             const targetPlatform = document.getElementById('target-platform').value;
 
+            // 准备 source_article
+            let sourceArticle;
+            let articleId;
+
+            if (window.deepModeFromAnswers && window.selectedAnswerIndexes) {
+                // 从回答合并模式
+                const selectedAnswers = window.selectedAnswerIndexes.map(i => window.answersData[i]);
+                const mergedText = selectedAnswers.map(a => a.excerpt || a.text || '').join('\n\n');
+                sourceArticle = {
+                    title: selectedArticle.title + '（合并回答）',
+                    text: mergedText,
+                };
+                articleId = selectedArticle.url || selectedArticle.title + '_merged';
+            } else {
+                // 从普通文章模式
+                sourceArticle = {
+                    title: selectedArticle.title,
+                    text: selectedArticle.text || selectedArticle.summary || '',
+                };
+                articleId = selectedArticle.url || selectedArticle.title;
+            }
+
             // 显示处理中状态
             document.getElementById('processing-title').textContent = '正在生成大纲...';
             document.getElementById('progress-status').textContent = '调用 AI 模型提取画像并生成大纲';
@@ -921,11 +949,8 @@
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        article_id: selectedArticle.url || selectedArticle.title,
-                        source_article: {
-                            title: selectedArticle.title,
-                            text: selectedArticle.text || selectedArticle.summary,
-                        },
+                        article_id: articleId,
+                        source_article: sourceArticle,
                         user_input: userInput,
                     }),
                 });
@@ -1060,6 +1085,10 @@
 
                 showNotification('已定稿保存！Session ID: ' + deepSessionId, 'success');
 
+                // 清理标记
+                window.deepModeFromAnswers = false;
+                window.selectedAnswerIndexes = null;
+
                 // 显示成功提示，返回文章列表
                 setTimeout(() => {
                     backToArticles();
@@ -1157,7 +1186,30 @@
 
         function updateMergeButton() {
             const checkboxes = document.querySelectorAll('.answer-checkbox input:checked');
-            document.getElementById('merge-btn').disabled = checkboxes.length === 0;
+            const hasChecked = checkboxes.length > 0;
+            document.getElementById('merge-btn').disabled = !hasChecked;
+            document.getElementById('deep-merge-btn').disabled = !hasChecked;
+        }
+
+        // 从回答列表进入深度生成模式
+        function showDeepModeFromAnswers() {
+            const checkboxes = document.querySelectorAll('.answer-checkbox input:checked');
+            const selectedIndexes = Array.from(checkboxes).map(cb => parseInt(cb.id.replace('answer-', '')));
+
+            if (selectedIndexes.length === 0) {
+                showNotification('请选择至少一个回答', 'error');
+                return;
+            }
+
+            // 标记为"从回答合并"模式
+            window.deepModeFromAnswers = true;
+            window.selectedAnswerIndexes = selectedIndexes;
+
+            // 显示选中的回答标题
+            const titles = selectedIndexes.map(i => window.answersData[i]?.excerpt?.slice(0, 30) || '回答').join(', ');
+            document.getElementById('selected-article-title').textContent = '已选择 ' + selectedIndexes.length + ' 个回答';
+
+            showSection(document.getElementById('mode-section'));
         }
 
         async function processArticle() {
