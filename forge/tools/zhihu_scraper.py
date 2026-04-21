@@ -1,38 +1,86 @@
-"""Zhihu scraper using Playwright."""
+"""Zhihu scraper using Playwright with stealth mode."""
 
 import logging
-from playwright.async_api import async_playwright, Browser, Page
+import json
+import os
+from playwright.async_api import async_playwright, Browser, Page, BrowserContext
+from playwright_stealth import Stealth
 
 from forge.config import ZHIHU_BASE_URL, PLAYWRIGHT_TIMEOUT
+
+ZHIHU_COOKIES_FILE = "/tmp/forge_cookies/zhihu_cookies.json"
 
 logger = logging.getLogger(__name__)
 
 
 class ZhihuScraper:
-    """Async Zhihu scraper with browser automation."""
+    """Async Zhihu scraper with browser automation and stealth mode."""
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = True):
         self.headless = headless
         self.playwright = None
         self.browser: Browser = None
+        self.context: BrowserContext = None
         self.page: Page = None
 
     async def __aenter__(self):
         logger.info("[ZhihuScraper] Starting browser")
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.page = await self.browser.new_page()
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+            ]
+        )
+        self.context = await self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='zh-CN',
+        )
+
+        # Apply stealth mode
+        await Stealth().apply_stealth_async(self.context)
+        logger.info("[ZhihuScraper] Stealth mode applied")
+
+        # Load saved cookies
+        if os.path.exists(ZHIHU_COOKIES_FILE):
+            try:
+                with open(ZHIHU_COOKIES_FILE, "r") as f:
+                    cookies = json.load(f)
+                    await self.context.add_cookies(cookies)
+                    logger.info(f"[ZhihuScraper] Loaded {len(cookies)} saved cookies")
+            except Exception as e:
+                logger.warning(f"[ZhihuScraper] Failed to load cookies: {e}")
+
+        self.page = await self.context.new_page()
         self.page.set_default_timeout(PLAYWRIGHT_TIMEOUT)
         return self
 
     async def __aexit__(self, *args):
         logger.info("[ZhihuScraper] Closing browser")
         try:
+            # Save cookies before closing
+            await self._save_cookies()
             if self.browser:
                 await self.browser.close()
         finally:
             if self.playwright:
                 await self.playwright.stop()
+
+    async def _save_cookies(self):
+        """Save cookies to file for login persistence."""
+        try:
+            cookies = await self.context.cookies()
+            zhihu_cookies = [c for c in cookies if "zhihu" in c.get("domain", "")]
+            if zhihu_cookies:
+                os.makedirs(os.path.dirname(ZHIHU_COOKIES_FILE), exist_ok=True)
+                with open(ZHIHU_COOKIES_FILE, "w") as f:
+                    json.dump(zhihu_cookies, f)
+                logger.info(f"[ZhihuScraper] Saved {len(zhihu_cookies)} cookies")
+        except Exception as e:
+            logger.warning(f"[ZhihuScraper] Failed to save cookies: {e}")
 
     async def scrape_article(self, url: str) -> dict:
         """Scrape a specific Zhihu article by URL.

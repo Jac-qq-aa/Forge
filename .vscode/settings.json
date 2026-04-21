@@ -1,0 +1,9 @@
+{
+    "python.defaultInterpreterPath": "/home/hugo/miniconda3/envs/forge/bin/python",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}

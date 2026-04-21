@@ -107,7 +107,23 @@ class VideoComposer:
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                         if resp.status == 200:
-                            ext = url.split(".")[-1][:4] or "jpg"
+                            # Extract extension from URL or Content-Type
+                            content_type = resp.headers.get("Content-Type", "")
+                            if "jpeg" in content_type or "jpg" in content_type:
+                                ext = "jpg"
+                            elif "png" in content_type:
+                                ext = "png"
+                            elif "gif" in content_type:
+                                ext = "gif"
+                            elif "webp" in content_type:
+                                ext = "webp"
+                            else:
+                                # Try to get from URL path
+                                path_part = url.split("?")[0].rstrip("/")
+                                ext = path_part.split(".")[-1][-4:] if "." in path_part else "jpg"
+                                if ext in ["com", "net", "org", "http", "www"]:
+                                    ext = "jpg"
+
                             path = f"{dir}/image_{i}.{ext}"
                             content = await resp.read()
                             async with aiofiles.open(path, "wb") as f:

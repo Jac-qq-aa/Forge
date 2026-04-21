@@ -12,7 +12,6 @@ import aiosqlite
 
 from forge.deep_mode.session_state import (
     DeepModeSession,
-    ProfileInfo,
     SessionStage,
     create_session_id,
     create_initial_session,
@@ -82,7 +81,7 @@ class SessionManager:
         self,
         article_id: str,
         source_article: dict,
-        profile: ProfileInfo = None
+        profile: dict = None
     ) -> DeepModeSession:
         """创建新会话。"""
         await self._ensure_db()

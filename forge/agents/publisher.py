@@ -13,14 +13,24 @@ async def publisher_node(state: GraphState) -> dict:
     target_platform = state.get("target_platform", "xhs_video")
     video_path = state.get("video_path", "")
     final_script = state.get("final_script", "")
+    skip_publish = state.get("skip_publish", False)
 
     logger.info(f"[Publisher] Starting publication to: {target_platform}")
     logger.info(f"[Publisher] Video path: {video_path}")
+    logger.info(f"[Publisher] Skip publish (dry-run): {skip_publish}")
 
     # Extract title from script (first line or first 50 chars)
     lines = final_script.strip().split("\n")
     title = lines[0][:50] if lines else "无标题"
     description = final_script
+
+    # Dry-run mode: skip actual browser publishing
+    if skip_publish:
+        logger.info("[Publisher] DRY-RUN MODE: Skipping browser automation")
+        publish_status = "DRY-RUN: 跳过实际发布（测试模式）"
+        logger.info(f"[Publisher] Would have published: title='{title}'")
+        logger.info("[Publisher] Node completed (dry-run)")
+        return {"publish_status": publish_status}
 
     result = {"success": False, "error": "Unknown platform"}
 

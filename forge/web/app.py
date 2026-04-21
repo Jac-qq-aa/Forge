@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from forge.graph import workflow, create_initial_state
 from forge.deep_mode import (
-    ProfileInfo,
     DeepModeSession,
     SessionNotFoundError,
     InvalidStageError,
@@ -350,8 +349,7 @@ class CreateSessionRequest(BaseModel):
     """创建会话请求。"""
     article_id: str
     source_article: dict
-    profile: ProfileInfo = None
-    user_input: str = None  # 用户自然语言需求（可选）
+    user_input: str = None  # 用户改写需求
 
 
 class OutlineActionRequest(BaseModel):
@@ -656,10 +654,7 @@ async def download_task_dir(task_dir: str):
 
 @app.post("/api/deep_mode/create_session")
 async def api_create_deep_mode_session(request: CreateSessionRequest):
-    """创建深度生成会话，启动 Plan-Execute Agent。
-
-    如果提供 user_input，会自动提取画像并开始生成大纲。
-    """
+    """创建深度生成会话，直接生成大纲。"""
     logger.info(f"[API] Create deep mode session: article_id={request.article_id}")
 
     session_manager = get_session_manager()
@@ -668,27 +663,25 @@ async def api_create_deep_mode_session(request: CreateSessionRequest):
     session = await session_manager.create_session(
         article_id=request.article_id,
         source_article=request.source_article,
-        profile=request.profile
+        profile=None
     )
 
-    # 如果有用户输入，立即开始画像提取和大纲生成
+    # 如果有用户输入，直接生成大纲
     if request.user_input:
         try:
             session = await run_plan_execute(
                 session["session_id"],
-                "profile_extraction",
+                "outline_generation",
                 user_input=request.user_input
             )
             return {
                 "session_id": session["session_id"],
                 "stage": session["stage"],
-                "profile": session["profile"],
                 "outline": session["outline"],
                 "outline_version": session["outline_version"],
             }
         except Exception as e:
-            # 失败时返回会话 ID，用户可以重试
-            logger.error(f"[API] Profile extraction failed: {e}")
+            logger.error(f"[API] Outline generation failed: {e}")
             return {
                 "session_id": session["session_id"],
                 "stage": "waiting_profile",
@@ -712,7 +705,6 @@ async def api_get_session_status(session_id: str):
             "session_id": session["session_id"],
             "article_id": session["article_id"],
             "stage": session["stage"],
-            "profile": session["profile"],
             "outline": session["outline"],
             "outline_version": session["outline_version"],
             "draft_v1": session["draft_v1"],

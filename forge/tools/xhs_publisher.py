@@ -1,33 +1,52 @@
 """Xiaohongshu video publisher using Playwright."""
 
+import json
 import logging
-from playwright.async_api import async_playwright, Browser, Page
+import os
+from playwright.async_api import async_playwright, Browser, Page, BrowserContext
 
-from forge.config import XHS_BASE_URL, PLAYWRIGHT_TIMEOUT
+from forge.config import XHS_BASE_URL, PLAYWRIGHT_TIMEOUT, COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
 
 class XhsPublisher:
-    """Async Xiaohongshu video publisher."""
+    """Async Xiaohongshu video publisher with cookie persistence."""
 
     def __init__(self, headless: bool = False):
         self.headless = headless
         self.playwright = None
-        self.browser: Browser = None
-        self.page: Page = None
+        self.browser: Browser | None = None
+        self.context: BrowserContext | None = None
+        self.page: Page | None = None
 
     async def __aenter__(self):
         logger.info("[XhsPublisher] Starting browser")
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.page = await self.browser.new_page()
+
+        # Create context and load cookies if exist
+        self.context = await self.browser.new_context()
+
+        # Load saved cookies
+        if os.path.exists(COOKIES_FILE):
+            try:
+                with open(COOKIES_FILE, "r") as f:
+                    cookies = json.load(f)
+                    await self.context.add_cookies(cookies)
+                    logger.info(f"[XhsPublisher] Loaded {len(cookies)} saved cookies")
+            except Exception as e:
+                logger.warning(f"[XhsPublisher] Failed to load cookies: {e}")
+
+        self.page = await self.context.new_page()
         self.page.set_default_timeout(PLAYWRIGHT_TIMEOUT)
         return self
 
     async def __aexit__(self, *args):
         logger.info("[XhsPublisher] Closing browser")
         try:
+            # Save cookies before closing
+            await self._save_cookies()
             if self.browser is not None:
                 await self.browser.close()
         except Exception as e:
@@ -38,6 +57,21 @@ class XhsPublisher:
                     await self.playwright.stop()
                 except Exception as e:
                     logger.debug(f"[XhsPublisher] Error stopping playwright: {e}")
+
+    async def _save_cookies(self):
+        """Save cookies to file for login persistence."""
+        try:
+            cookies = await self.context.cookies()
+            # Filter only xiaohongshu cookies
+            xhs_cookies = [c for c in cookies if "xiaohongshu" in c.get("domain", "")]
+
+            if xhs_cookies:
+                os.makedirs(os.path.dirname(COOKIES_FILE), exist_ok=True)
+                with open(COOKIES_FILE, "w") as f:
+                    json.dump(xhs_cookies, f)
+                logger.info(f"[XhsPublisher] Saved {len(xhs_cookies)} cookies")
+        except Exception as e:
+            logger.warning(f"[XhsPublisher] Failed to save cookies: {e}")
 
     async def login(self) -> bool:
         """Wait for user to login via QR code."""
