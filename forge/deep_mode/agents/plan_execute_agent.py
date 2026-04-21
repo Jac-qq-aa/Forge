@@ -202,19 +202,26 @@ class PlanExecuteAgent:
             )
 
     async def run_rag_search(self, session: DeepModeSession) -> str:
-        """搜索知识库。"""
+        """搜索知识库（带超时保护）。"""
         logger.info("[PlanExecute] Running RAG search...")
 
         title = session["source_article"].get("title", "")
         text = session["source_article"].get("text", "")[:200]
         query = f"{title} {text}"
 
-        kb = get_knowledge_base()
         try:
-            context = kb.get_context_for_topic(query, max_docs=3)
+            # 知识库是同步代码，使用 asyncio 包装并添加超时
+            kb = get_knowledge_base()
+            context = await asyncio.wait_for(
+                asyncio.to_thread(kb.get_context_for_topic, query, 3),
+                timeout=10.0  # 10秒超时
+            )
             return context or ""
+        except asyncio.TimeoutError:
+            logger.warning("[PlanExecute] RAG search timeout (10s), skipping")
+            return ""
         except Exception as e:
-            logger.warning(f"[PlanExecute] RAG search failed: {e}")
+            logger.warning(f"[PlanExecute] RAG search failed: {e}, skipping")
             return ""
 
     async def run_outline_generation(self, session: DeepModeSession) -> str:
