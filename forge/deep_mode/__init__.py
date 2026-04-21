@@ -14,6 +14,10 @@ from forge.deep_mode.errors import (
     AgentTimeoutError,
     RAGSearchFailedError,
 )
+from forge.deep_mode.session_manager import (
+    SessionManager,
+    get_session_manager,
+)
 
 __all__ = [
     "ProfileInfo",
@@ -26,4 +30,6 @@ __all__ = [
     "OutlineRevisionLimitError",
     "AgentTimeoutError",
     "RAGSearchFailedError",
+    "SessionManager",
+    "get_session_manager",
 ]
