@@ -1,19 +1,16 @@
 # forge/deep_mode/tools/__init__.py
 
-"""深度生成模式 Agent 工具集。"""
+"""深度生成模式工具集 - 已迁移到 workflow.py。
 
-from forge.deep_mode.tools.rag_search import rag_search
-from forge.deep_mode.tools.outline_generator import outline_generator
-from forge.deep_mode.tools.content_generator import content_generator
-from forge.deep_mode.tools.section_rewriter import section_rewriter
-from forge.deep_mode.tools.tone_adjuster import tone_adjuster
-from forge.deep_mode.tools.wikipedia_check import wikipedia_check
+旧版单独的工具文件已删除。
+新版工具以 @tool 装饰器形式定义在 workflow.py 中：
 
-__all__ = [
-    "rag_search",
-    "outline_generator",
-    "content_generator",
-    "section_rewriter",
-    "tone_adjuster",
-    "wikipedia_check",
-]
+- rewrite_section
+- adjust_tone
+- check_fact
+- search_knowledge
+
+请使用 forge.deep_mode.workflow 中的函数和工具。
+"""
+
+__all__ = []

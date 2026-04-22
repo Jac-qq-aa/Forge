@@ -1,8 +1,8 @@
-"""Async LLM client for Qwen API via OpenAI-compatible interface."""
+"""Async and Sync LLM client for Qwen API via OpenAI-compatible interface."""
 
 import asyncio
 import logging
-from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError
+from openai import AsyncOpenAI, OpenAI, APIError, APIConnectionError, RateLimitError
 
 from forge.config import QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL, LLM_TIMEOUT
 
@@ -76,3 +76,53 @@ class LLMClient:
                     logger.error(f"[LLM] All retries exhausted")
                     raise LLMClientError(f"LLM调用失败: {e}") from e
                 await asyncio.sleep(2 ** attempt)
+
+
+class SyncLLMClient:
+    """Sync client for Qwen LLM - used in @tool decorated functions."""
+
+    def __init__(self):
+        if not QWEN_API_KEY:
+            raise ValueError("QWEN_API_KEY not set in environment")
+        self.client = OpenAI(
+            base_url=QWEN_API_URL,
+            api_key=QWEN_API_KEY,
+            timeout=LLM_TIMEOUT,
+        )
+
+    def chat(self, prompt: str, system_prompt: str = None) -> str:
+        """Send a synchronous chat request to Qwen."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        logger.info(f"[LLM-Sync] Sending request with {len(messages)} messages")
+
+        response = self.client.chat.completions.create(
+            model=QWEN_MODEL,
+            messages=messages,
+        )
+        if not response.choices or response.choices[0].message.content is None:
+            raise LLMClientError("Empty response from LLM")
+        content = response.choices[0].message.content
+        logger.info(f"[LLM-Sync] Response received: {len(content)} chars")
+        return content
+
+    def chat_with_retry(self, prompt: str, system_prompt: str = None, max_retries: int = 3) -> str:
+        """Send chat request with exponential backoff retry (sync version)."""
+        import time
+        for attempt in range(max_retries):
+            try:
+                return self.chat(prompt, system_prompt)
+            except (APIError, APIConnectionError, RateLimitError) as e:
+                logger.warning(f"[LLM-Sync] Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"[LLM-Sync] All retries exhausted")
+                    raise LLMClientError(f"LLM调用失败: {e}") from e
+                time.sleep(2 ** attempt)
+
+
+def get_sync_llm() -> SyncLLMClient:
+    """Get a synchronous LLM client for use in @tool functions."""
+    return SyncLLMClient()

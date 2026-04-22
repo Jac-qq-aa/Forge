@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.requests import Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -24,7 +25,7 @@ from forge.deep_mode import (
     OutlineRevisionLimitError,
 )
 from forge.deep_mode.session_manager import get_session_manager
-from forge.deep_mode.agents.plan_execute_agent import run_plan_execute
+from forge.deep_mode.workflow import run_plan_execute
 from forge.deep_mode.websocket_handler import handle_websocket_connection
 
 # Setup logging
@@ -38,6 +39,19 @@ logger = logging.getLogger("ForgeWeb")
 
 # Create FastAPI app
 app = FastAPI(title="Forge 内容转换工作流")
+
+# CORS configuration for React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:3000",  # Alternative dev port
+        "http://localhost:8000",  # Same origin
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Mount static files and templates
 BASE_DIR = Path(__file__).parent
@@ -338,8 +352,10 @@ async def generate_video(request: GenerateVideoRequest):
 class GenerateDigitalHumanRequest(BaseModel):
     content: str
     avatar_url: str = ""  # 可选，自定义头像图片 URL
+    avatar_data: str = ""  # 可选，自定义头像 base64 数据
+    avatar: str = ""  # 预设头像 ID (default1, default2, default3, custom)
     voice: str = "longxiaochun"  # 可选，语音风格 ID
-    avatar_id: str = ""   # 可选，预设头像 ID（已废弃，使用 avatar_url）
+    session_id: str = ""  # 可选，会话 ID
 
 
 # ========== 深度生成模式 API ==========
@@ -382,8 +398,54 @@ async def generate_digital_human_video(request: GenerateDigitalHumanRequest):
         if not QWEN_API_KEY:
             return {"success": False, "error": "QWEN_API_KEY 未配置"}
 
-        # 生成任务 ID 和视频文件名
+        # 先生成任务 ID（自定义头像文件名需要用到）
         task_id = hashlib.md5(f"{request.content}{time.time()}".encode()).hexdigest()[:12]
+
+        # 预设头像 URL 映射
+        preset_avatars = {
+            "default1": "https://img.alicdn.com/imgextra/i3/O1CN011FObkp1T7Ttowoq4F_!!6000000002335-0-tps-1440-1797.jpg",
+            "default2": "https://forge-digitalhuman.oss-cn-beijing.aliyuncs.com/digital_human/avatar_default2.png",
+            "default3": "https://forge-digitalhuman.oss-cn-beijing.aliyuncs.com/digital_human/avatar_default3.png",
+        }
+
+        # 处理头像 URL
+        final_avatar_url = request.avatar_url
+
+        # 1. 如果提供了预设头像 ID
+        if request.avatar and request.avatar in preset_avatars:
+            final_avatar_url = preset_avatars[request.avatar]
+
+        # 2. 如果是自定义头像（base64 数据）
+        elif request.avatar == "custom" and request.avatar_data:
+            # 保存 base64 图片到临时文件
+            import base64
+            import os
+
+            # 解析 base64 数据
+            if request.avatar_data.startswith("data:image"):
+                # 移除 data:image/xxx;base64, 前缀
+                avatar_base64 = request.avatar_data.split(",", 1)[1]
+            else:
+                avatar_base64 = request.avatar_data
+
+            # 生成文件名
+            avatar_filename = f"avatar_custom_{task_id}.png"
+            avatar_filepath = f"{VIDEO_OUTPUT_DIR}/{avatar_filename}"
+
+            # 保存图片
+            try:
+                avatar_bytes = base64.b64decode(avatar_base64)
+                with open(avatar_filepath, "wb") as f:
+                    f.write(avatar_bytes)
+                logger.info(f"[API] Custom avatar saved: {avatar_filepath}")
+
+                # 使用本地文件路径
+                final_avatar_url = avatar_filepath
+            except Exception as e:
+                logger.error(f"[API] Save custom avatar error: {e}")
+                return {"success": False, "error": f"保存自定义头像失败: {e}"}
+
+        # 视频文件名
         video_path = f"{VIDEO_OUTPUT_DIR}/digital_human_{task_id}.mp4"
 
         # 保存初始状态
@@ -394,11 +456,11 @@ async def generate_digital_human_video(request: GenerateDigitalHumanRequest):
             task_id,
             request.content,
             video_path,
-            avatar_url=request.avatar_url,
+            avatar_url=final_avatar_url,
             voice=request.voice
         ))
 
-        logger.info(f"[API] Task created: {task_id}, avatar_url: {request.avatar_url[:50] if request.avatar_url else 'default'}, voice: {request.voice}")
+        logger.info(f"[API] Task created: {task_id}, avatar: {request.avatar}, avatar_url: {final_avatar_url[:50] if final_avatar_url else 'default'}, voice: {request.voice}")
 
         return {
             "success": True,

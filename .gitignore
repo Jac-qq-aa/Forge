@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Database
+*.db
+*.sqlite3
+sessions.db
+
+# Volumes (Docker data - must exclude)
+volumes/
+volumes*/
+
+# Reference code
+reference/
+
+# Node modules and build
+node_modules/
+forge-web-react/node_modules/
+forge-web-react/dist/
+
+# Environment and secrets
+.env
+*.secret
+credentials.json
+
+# Logs
+*.log
+logs/
+
+# Output files
+output/
+*.mp4
+*.wav
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
