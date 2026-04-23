@@ -73,6 +73,20 @@ STAGE_COMPLETED = "completed"
 STAGE_CANCELLED = "cancelled"
 
 
+# SessionStage 兼容类（已废弃，使用字符串常量代替）
+class SessionStage:
+    """会话阶段枚举（兼容旧代码）。"""
+    PLANNING = STAGE_PLANNING
+    WAITING_INPUT = STAGE_WAITING_INPUT
+    GENERATING_OUTLINE = STAGE_GENERATING_OUTLINE
+    WAITING_OUTLINE = STAGE_WAITING_OUTLINE
+    GENERATING_CONTENT = STAGE_GENERATING_CONTENT
+    EXECUTING = STAGE_EXECUTING
+    TUNING = STAGE_TUNING
+    COMPLETED = STAGE_COMPLETED
+    CANCELLED = STAGE_CANCELLED
+
+
 def create_session_id() -> str:
     """生成唯一会话 ID。"""
     return str(uuid.uuid4())

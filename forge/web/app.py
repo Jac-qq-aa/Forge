@@ -752,12 +752,14 @@ async def api_create_deep_mode_session(request: CreateSessionRequest):
 
     session_manager = get_session_manager()
 
-    # 创建会话
+    # 创建会话（适配新 SessionManager）
     session = await session_manager.create_session(
-        article_id=request.article_id,
         source_article=request.source_article,
-        profile=None
+        user_input=request.user_input or ""
     )
+
+    # 保存 article_id 到会话（兼容字段）
+    session["article_id"] = request.article_id
 
     # 如果有用户输入，直接生成大纲
     if request.user_input:
