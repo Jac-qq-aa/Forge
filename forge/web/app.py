@@ -917,6 +917,38 @@ async def api_list_sessions(article_id: str = None, stage: str = None):
     }
 
 
+# ---- 历史记录 API ----
+
+
+@app.get("/api/deep_mode/history")
+async def get_deep_mode_history(
+    limit: int = 20,
+    offset: int = 0
+):
+    """获取历史会话列表（类似 ChatGPT）。"""
+    session_manager = get_session_manager()
+    sessions = await session_manager.get_history_sessions(limit, offset)
+    return {"sessions": sessions, "total": len(sessions)}
+
+
+@app.get("/api/deep_mode/session/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """获取会话完整消息历史。"""
+    session_manager = get_session_manager()
+    messages = await session_manager.get_session_messages(session_id)
+    return {"session_id": session_id, "messages": messages}
+
+
+@app.post("/api/deep_mode/session/{session_id}/restore")
+async def restore_session(session_id: str):
+    """恢复中断的会话。"""
+    session_manager = get_session_manager()
+    session = await session_manager.load_session(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    return {"session": session, "restored": True}
+
+
 @app.websocket("/ws/deep_mode/{session_id}")
 async def deep_mode_websocket(websocket: WebSocket, session_id: str):
     """深度生成实时对话通道（Phase 2）。"""
