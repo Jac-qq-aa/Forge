@@ -19,13 +19,42 @@
 
     <!-- 历史记录弹窗 -->
     <div id="history-modal" class="modal" style="display: none;">
-        <div class="modal-content">
+        <div class="modal-content history-modal-content">
             <div class="modal-header">
-                <h2>📜 历史会话记录</h2>
+                <div class="history-header-left">
+                    <input type="checkbox" id="history-select-all" onclick="toggleSelectAll()">
+                    <h3>📜 历史记录</h3>
+                </div>
                 <button class="modal-close" onclick="closeHistoryModal()">×</button>
             </div>
             <div id="history-list" class="history-list">
-                <p class="loading-text">加载中...</p>
+                <!-- 动态内容 -->
+            </div>
+            <div id="history-action-bar" class="history-action-bar" style="display: none;">
+                <span>已选中 <span id="history-selected-count">0</span> 条</span>
+                <button class="btn btn-danger btn-small" onclick="deleteSelectedSessions()">删除选中</button>
+                <button class="btn btn-secondary btn-small" onclick="clearAllHistory()">清空全部</button>
+            </div>
+            <div class="modal-footer" id="history-detail-footer" style="display: none;">
+                <button class="btn btn-secondary" onclick="closeSessionDetail()">返回列表</button>
+                <button id="history-download-text-btn" class="btn btn-secondary" onclick="downloadHistoryText()" style="display: none;">📥 下载文本</button>
+                <button id="history-download-video-btn" class="btn btn-secondary" onclick="downloadHistoryVideo()" style="display: none;">🎬 下载视频</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div id="delete-confirm-modal" class="modal" style="display: none;">
+        <div class="modal-content delete-confirm-content">
+            <div class="modal-header">
+                <h3>⚠️ 确认删除</h3>
+            </div>
+            <div class="modal-body">
+                <p id="delete-confirm-message">确定删除记录？此操作不可恢复。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeDeleteConfirmModal()">取消</button>
+                <button id="delete-confirm-btn" class="btn btn-danger">确认删除</button>
             </div>
         </div>
     </div>
@@ -37,11 +66,13 @@
                 <h2>📝 会话详情</h2>
                 <button class="modal-close" onclick="closeSessionDetailModal()">×</button>
             </div>
-            <div id="session-detail-content" class="session-detail">
+            <div id="session-detail-content" class="session-detail" style="max-height: 70vh; overflow-y: auto;">
                 <p class="loading-text">加载中...</p>
             </div>
-            <div class="modal-footer">
-                <button class="btn btn-primary" onclick="restoreSession()">恢复此会话</button>
+            <div class="modal-footer" style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-primary" onclick="restoreSession()">🔄 恢复此会话</button>
+                <button id="history-download-text-btn" class="btn btn-secondary" onclick="downloadHistoryText()" style="display: none;">📥 下载文本</button>
+                <button id="history-download-video-btn" class="btn btn-secondary" onclick="downloadHistoryVideo()" style="display: none;">🎬 下载视频</button>
                 <button class="btn btn-secondary" onclick="closeSessionDetailModal()">关闭</button>
             </div>
         </div>
@@ -224,7 +255,7 @@
                 <span class="step-badge">步骤 2.8</span>
                 <h2>全文预览</h2>
             </div>
-            <p id="deep-content-status" class="hint" style="color: #4CAF50;">全文已生成，可直接编辑或进入对话微调</p>
+            <p id="deep-content-status" class="hint" style="color: #4CAF50;">全文已生成，可直接定稿或进入对话微调</p>
 
             <!-- 生成状态提示 -->
             <div id="deep-content-loading" style="display: none; background: #fff3e0; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 2px solid #FF9800;">
@@ -232,18 +263,28 @@
                     <div class="spinner" style="width: 20px; height: 20px; border: 3px solid #FF9800; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></div>
                     <span id="deep-content-loading-text" style="color: #E65100; font-weight: bold;">正在生成全文...</span>
                 </div>
-                <p style="color: #666; margin-top: 10px; font-size: 13px;">⏳ AI 正在根据大纲生成完整文章，请稍候，内容区域已锁定</p>
+                <p style="color: #666; margin-top: 10px; font-size: 13px;">⏳ AI 正在根据大纲生成完整文章，请稍候</p>
             </div>
 
+            <!-- 文章预览区域 -->
             <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                <h4 style="margin-bottom: 10px;">生成的全文（可直接编辑）：</h4>
-                <textarea id="deep-content-preview" rows="15" style="width: 100%; font-size: 14px; line-height: 1.6; border: 1px solid #ddd; border-radius: 8px; padding: 10px; resize: vertical; max-height: 500px;"></textarea>
+                <h4 style="margin-bottom: 10px;">📝 生成的全文（可直接编辑）：</h4>
+                <textarea id="deep-content-preview" rows="15" style="width: 100%; font-size: 14px; line-height: 1.6; border: 1px solid #ddd; border-radius: 8px; padding: 10px; resize: vertical; max-height: 500px; background: #fff;"></textarea>
+                <p style="color: #666; font-size: 12px; margin-top: 5px;">💡 编辑后点击"定稿保存"即可保存修改</p>
             </div>
 
+            <!-- 操作按钮 -->
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button id="deep-start-chat-btn" class="btn btn-primary" onclick="startDeepChat()">💬 进入微调对话</button>
-                <button id="deep-save-edit-btn" class="btn btn-secondary" onclick="saveEditedContent()" style="display: none; background: #FF9800;">💾 保存编辑</button>
-                <button id="deep-finalize-btn" class="btn btn-secondary" onclick="finalizeDeepSession()">✅ 定稿保存</button>
+                <button id="deep-start-chat-btn" class="btn btn-primary" onclick="enterDeepChat()">💬 进入微调对话</button>
+                <button id="deep-finalize-btn" class="btn btn-success" onclick="finalizeDeepSession()" style="background: #2e7d32;">✅ 定稿保存</button>
+            </div>
+
+            <!-- 定稿加载提示 -->
+            <div id="deep-finalize-loading" style="display: none; margin-top: 15px; padding: 10px; background: #e8f5e9; border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="spinner" style="width: 20px; height: 20px; border: 3px solid #4CAF50; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <span style="color: #2e7d32;">正在定稿保存...</span>
+                </div>
             </div>
         </section>
 
@@ -253,7 +294,14 @@
                 <span class="step-badge">步骤 2.9</span>
                 <h2>微调对话</h2>
             </div>
-            <p class="hint">全文已生成，您可以通过对话微调内容</p>
+            <p class="hint">全文已生成，您可以通过对话微调内容，也可直接编辑下方文章</p>
+
+            <!-- 文章预览（可编辑） -->
+            <div style="background: #e8f5e9; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                <h4 style="margin-bottom: 10px; color: #2e7d32;">📝 当前文章（可直接编辑）：</h4>
+                <textarea id="deep-chat-content-preview" rows="8" style="width: 100%; font-size: 14px; line-height: 1.6; border: 1px solid #ddd; border-radius: 8px; padding: 10px; resize: vertical; background: #fff;"></textarea>
+                <p style="color: #666; font-size: 12px; margin-top: 5px;">💡 编辑后点击定稿保存，或继续对话微调</p>
+            </div>
 
             <!-- 对话历史 -->
             <div id="deep-chat-history" style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 15px; max-height: 300px; overflow-y: auto;">
@@ -343,6 +391,38 @@
                         </div>
                     </div>
                     <p id="deep-selected-avatar-info" style="margin-top: 10px; color: #666;">当前选择：默认形象 1</p>
+                </div>
+
+                <!-- 声音选择 -->
+                <div style="margin-bottom: 15px;">
+                    <label style="font-weight: bold; display: block; margin-bottom: 10px;">🎙️ 选择语音风格：</label>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <!-- 女声选项 -->
+                        <div class="deep-voice-option" data-voice="longxiaochun" onclick="selectDeepVoice('longxiaochun')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #4CAF50; border-radius: 20px; background: #e8f5e9;">
+                            <span style="font-size: 14px;">🌸 温柔女声</span>
+                        </div>
+                        <div class="deep-voice-option" data-voice="longyue" onclick="selectDeepVoice('longyue')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">🍯 甜美女声</span>
+                        </div>
+                        <div class="deep-voice-option" data-voice="longwan" onclick="selectDeepVoice('longwan')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">🎉 活泼女声</span>
+                        </div>
+                        <div class="deep-voice-option" data-voice="longshuang" onclick="selectDeepVoice('longshuang')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">📚 知性女声</span>
+                        </div>
+                        <!-- 男声选项 -->
+                        <div class="deep-voice-option" data-voice="longfei" onclick="selectDeepVoice('longfei')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">👔 沉稳男声</span>
+                        </div>
+                        <div class="deep-voice-option" data-voice="longteng" onclick="selectDeepVoice('longteng')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">🎤 大气男声</span>
+                        </div>
+                        <!-- 童声选项 -->
+                        <div class="deep-voice-option" data-voice="longjielidou" onclick="selectDeepVoice('longjielidou')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">🧒 活泼童声</span>
+                        </div>
+                    </div>
+                    <p id="deep-selected-voice-info" style="margin-top: 10px; color: #666;">当前选择：温柔女声（龙小春）</p>
                 </div>
 
                 <button id="deep-gen-video-btn" class="btn btn-primary" onclick="generateDeepDigitalHuman()">
@@ -816,11 +896,27 @@
         }
 
         function showSection(section) {
+            // 隐藏普通模式 section
             articlesSection.style.display = 'none';
             document.getElementById('answers-section').style.display = 'none';
             processingSection.style.display = 'none';
             resultSection.style.display = 'none';
             errorSection.style.display = 'none';
+
+            // 隐藏深度生成模式 section
+            const deepProfileSection = document.getElementById('deep-profile-section');
+            const deepOutlineSection = document.getElementById('deep-outline-section');
+            const deepContentSection = document.getElementById('deep-content-section');
+            const deepChatSection = document.getElementById('deep-chat-section');
+            const deepFinalizedSection = document.getElementById('deep-finalized-section');
+
+            if (deepProfileSection) deepProfileSection.style.display = 'none';
+            if (deepOutlineSection) deepOutlineSection.style.display = 'none';
+            if (deepContentSection) deepContentSection.style.display = 'none';
+            if (deepChatSection) deepChatSection.style.display = 'none';
+            if (deepFinalizedSection) deepFinalizedSection.style.display = 'none';
+
+            // 显示目标 section
             if (section) section.style.display = 'block';
         }
 
@@ -1134,6 +1230,18 @@
         let deepSessionId = null;
         let deepSelectedAvatar = 'default1';  // 深度生成模式选择的形象
         let deepCustomAvatarData = null;      // 自定义头像的 base64 数据
+        let deepSelectedVoice = 'longxiaochun';  // 深度生成模式选择的语音
+
+        // 语音名称映射（复用）
+        const DEEP_VOICE_NAMES = {
+            "longxiaochun": "温柔女声（龙小春）",
+            "longyue": "甜美女声（龙悦）",
+            "longwan": "活泼女声（龙婉）",
+            "longshuang": "知性女声（龙双）",
+            "longfei": "沉稳男声（龙飞）",
+            "longteng": "大气男声（龙腾）",
+            "longjielidou": "活泼童声（龙杰力豆）",
+        };
         let currentMode = 'normal';  // 当前模式：'normal' 快速改写 / 'deep' 深度生成
 
         // ========== 锁定/解锁辅助函数 ==========
@@ -1383,7 +1491,8 @@
 
                 // 显示全文预览
                 document.getElementById('deep-content-preview').value = data.draft;
-                document.getElementById('deep-content-status').textContent = '全文已生成，可直接编辑或定稿';
+
+                document.getElementById('deep-content-status').textContent = '全文已生成，可直接编辑后定稿';
                 document.getElementById('deep-content-status').style.color = '#4CAF50';
 
                 // 隐藏确认大纲卡片
@@ -1401,16 +1510,44 @@
         }
 
         async function finalizeDeepSession() {
+            console.log('[Finalize] finalizeDeepSession called');
+            console.log('[Finalize] deepSessionId:', deepSessionId);
+
+            if (!deepSessionId) {
+                showNotification('会话 ID 未设置，请先创建会话', 'error');
+                return;
+            }
+
+            // 直接使用 textarea 当前值（用户看到的就是要定稿的内容）
+            const contentToFinalize = document.getElementById('deep-content-preview').value;
+            console.log('[Finalize] contentToFinalize length:', contentToFinalize?.length);
+
+            if (!contentToFinalize || contentToFinalize.trim() === '') {
+                showNotification('文章内容为空，无法定稿', 'error');
+                return;
+            }
+
+            // 显示加载状态
+            document.getElementById('deep-finalize-loading').style.display = 'block';
+            document.getElementById('deep-finalize-btn').disabled = true;
+
             try {
+                console.log('[Finalize] Sending request...');
                 const response = await fetch('/api/deep_mode/finalize', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         session_id: deepSessionId,
+                        content: contentToFinalize,
                     }),
                 });
 
                 const data = await response.json();
+                console.log('[Finalize] Response:', data);
+
+                // 隐藏加载状态
+                document.getElementById('deep-finalize-loading').style.display = 'none';
+                document.getElementById('deep-finalize-btn').disabled = false;
 
                 if (data.error) {
                     showNotification('定稿失败：' + data.error, 'error');
@@ -1418,9 +1555,9 @@
                 }
 
                 // 设置定稿内容
-                document.getElementById('deep-final-content').value = data.final_draft || data.current_draft || document.getElementById('deep-content-preview').value;
+                document.getElementById('deep-final-content').value = data.current_draft || data.final_draft || contentToFinalize;
 
-                // 隐藏视频生成状态和结果（重置）
+                // 重置视频生成状态
                 document.getElementById('deep-video-status').style.display = 'none';
                 document.getElementById('deep-video-result').style.display = 'none';
 
@@ -1428,11 +1565,14 @@
                 window.deepModeFromAnswers = false;
                 window.selectedAnswerIndexes = null;
 
-                // 跳转到定稿成功界面
+                // 显示定稿成功界面
                 showSection(document.getElementById('deep-finalized-section'));
                 showNotification('🎉 定稿成功！', 'success');
 
             } catch (error) {
+                console.error('[Finalize] Error:', error);
+                document.getElementById('deep-finalize-loading').style.display = 'none';
+                document.getElementById('deep-finalize-btn').disabled = false;
                 showNotification('请求失败：' + error.message, 'error');
             }
         }
@@ -1509,6 +1649,27 @@
             document.getElementById('deep-selected-avatar-info').textContent = '当前选择：' + names[avatarId];
         }
 
+        // 深度生成模式语音选择
+        function selectDeepVoice(voiceId) {
+            deepSelectedVoice = voiceId;
+
+            // 更新选中状态样式
+            const options = document.querySelectorAll('.deep-voice-option');
+            options.forEach(opt => {
+                if (opt.dataset.voice === voiceId) {
+                    opt.style.border = '2px solid #4CAF50';
+                    opt.style.background = '#e8f5e9';
+                } else {
+                    opt.style.border = '2px solid #ddd';
+                    opt.style.background = '';
+                }
+            });
+
+            // 更新显示文字
+            document.getElementById('deep-selected-voice-info').textContent = '当前选择：' + DEEP_VOICE_NAMES[voiceId];
+            showNotification('已选择：' + DEEP_VOICE_NAMES[voiceId], 'success');
+        }
+
         // 上传自定义头像
         function uploadDeepCustomAvatar(event) {
             const file = event.target.files[0];
@@ -1579,6 +1740,7 @@
             const requestBody = {
                 content: content,
                 avatar: avatar,
+                voice: deepSelectedVoice,  // 使用深度模式选择的语音
                 session_id: deepSessionId,
             };
 
@@ -1747,7 +1909,8 @@
                 }
 
                 document.getElementById('deep-content-preview').value = data.draft;
-                document.getElementById('deep-content-status').textContent = '全文已生成，可直接编辑或定稿';
+
+                document.getElementById('deep-content-status').textContent = '全文已生成，可直接编辑后定稿';
                 document.getElementById('deep-content-status').style.color = '#4CAF50';
 
                 showSection(document.getElementById('deep-content-section'));
@@ -1762,26 +1925,12 @@
             }
         }
 
-        // 保存编辑后的正文
-        function saveEditedContent() {
-            const editedContent = document.getElementById('deep-content-preview').value;
-            showNotification('内容已保存到本地，可继续编辑或定稿', 'success');
-            document.getElementById('deep-save-edit-btn').style.display = 'none';
-        }
-
         // 监听大纲编辑变化
         document.addEventListener('DOMContentLoaded', function() {
             const outlineTextarea = document.getElementById('deep-outline-content');
             if (outlineTextarea) {
                 outlineTextarea.addEventListener('input', function() {
                     document.getElementById('deep-edit-accept-btn').style.display = 'inline-block';
-                });
-            }
-
-            const contentTextarea = document.getElementById('deep-content-preview');
-            if (contentTextarea) {
-                contentTextarea.addEventListener('input', function() {
-                    document.getElementById('deep-save-edit-btn').style.display = 'inline-block';
                 });
             }
         });
@@ -1791,9 +1940,18 @@
         let deepWebSocket = null;
         let deepWsConnected = false;
 
-        function startDeepChat() {
+        // 进入微调对话 - 隐藏全文预览卡片
+        function enterDeepChat() {
             // 先锁定输入，等待连接
             lockDeepChatInput(true);
+
+            // 隐藏全文预览卡片（步骤 2.8）
+            document.getElementById('deep-content-section').style.display = 'none';
+
+            // 将全文预览区域 textarea 当前内容复制到微调对话区域
+            // 直接用当前值，用户看到的就是要微调的内容
+            const mainContent = document.getElementById('deep-content-preview').value;
+            document.getElementById('deep-chat-content-preview').value = mainContent;
 
             // 初始化 WebSocket
             const wsUrl = `ws://${location.host}/ws/deep_mode/${deepSessionId}`;
@@ -1843,9 +2001,10 @@
                 if (data.tuning_history && data.tuning_history.length > 0) {
                     data.tuning_history.forEach(msg => addChatMessage(msg.role, msg.content));
                 }
-                // 设置当前草稿
+                // 设置当前草稿（同步到两个 textarea）
                 if (data.current_draft) {
                     document.getElementById('deep-content-preview').value = data.current_draft;
+                    document.getElementById('deep-chat-content-preview').value = data.current_draft;
                 }
             } else if (data.type === 'tuning_response') {
                 // Agent 响应 - 隐藏思考提示，解锁输入
@@ -1864,19 +2023,24 @@
                     }
                     showNotification('💬 AI回答了你的问题', 'info');
                 } else {
-                    // 修改类响应 - 更新草稿区
+                    // 修改类响应 - 更新两个草稿区
                     document.getElementById('deep-content-preview').value = data.updated_draft;
+                    document.getElementById('deep-chat-content-preview').value = data.updated_draft;
                     showNotification('✅ 文章已更新', 'success');
                 }
             } else if (data.type === 'finalized') {
-                // 定稿完成 - 跳转到定稿成功界面
+                // 定稿完成 - 隐藏微调对话卡片，跳转到定稿成功界面
                 document.getElementById('deep-chat-thinking').style.display = 'none';
                 unlockDeepChatInput();
 
-                // 设置定稿内容
-                document.getElementById('deep-final-content').value = data.final_draft || data.updated_draft || document.getElementById('deep-content-preview').value;
+                // 隐藏微调对话卡片
+                document.getElementById('deep-chat-section').style.display = 'none';
 
-                // 隐藏视频生成状态和结果（重置）
+                // 设置定稿内容（优先使用微调对话区域的保存内容）
+                const chatContent = document.getElementById('deep-chat-content-preview').value;
+                document.getElementById('deep-final-content').value = data.current_draft || data.final_draft || chatContent;
+
+                // 重置视频生成状态
                 document.getElementById('deep-video-status').style.display = 'none';
                 document.getElementById('deep-video-result').style.display = 'none';
 
@@ -1887,7 +2051,7 @@
                     deepWsConnected = false;
                 }
 
-                // 跳转到定稿成功界面
+                // 显示定稿成功界面
                 showSection(document.getElementById('deep-finalized-section'));
                 showNotification('🎉 定稿成功！', 'success');
             } else if (data.type === 'error') {
@@ -1961,22 +2125,35 @@
         }
 
         function finalizeFromChat() {
-            if (!deepWsConnected || !deepWebSocket || deepWebSocket.readyState !== WebSocket.OPEN) {
-                showNotification('WebSocket 未连接', 'error');
+            // 获取用户在微调对话区域 textarea 中编辑的内容
+            const editedContent = document.getElementById('deep-chat-content-preview').value;
+
+            console.log('[Finalize] finalizeFromChat called');
+            console.log('[Finalize] editedContent length:', editedContent?.length);
+
+            if (!editedContent || editedContent.trim() === '') {
+                showNotification('文章内容为空，无法定稿', 'error');
                 return;
             }
-            // 锁定输入，等待定稿完成
-            lockDeepChatInput(true);
-            deepWebSocket.send(JSON.stringify({type: 'finalize'}));
+
+            // 同步到主 textarea
+            document.getElementById('deep-content-preview').value = editedContent;
+
+            // 直接使用 HTTP 定稿（更可靠）
+            finalizeDeepSession();
         }
 
         function backToContentPreview() {
+            // 关闭 WebSocket
             if (deepWebSocket) {
                 deepWebSocket.close();
                 deepWebSocket = null;
                 deepWsConnected = false;
             }
-            showSection(document.getElementById('deep-content-section'));
+
+            // 隐藏微调对话卡片，显示全文预览卡片
+            document.getElementById('deep-chat-section').style.display = 'none';
+            document.getElementById('deep-content-section').style.display = 'block';
         }
 
         async function getAnswers(questionUrl) {
@@ -2858,10 +3035,15 @@
         // ========== 历史记录功能 ==========
 
         let currentHistorySessionId = null;
+        let selectedSessionIds = [];  // 已选中的 session_id 列表
 
         async function showHistoryModal() {
             document.getElementById('history-modal').style.display = 'flex';
             document.getElementById('history-list').innerHTML = '<p class="loading-text">加载中...</p>';
+
+            // 重置选中状态
+            selectedSessionIds = [];
+            updateSelectUI();
 
             try {
                 const response = await fetch('/api/deep_mode/history?limit=20');
@@ -2871,22 +3053,35 @@
                     let html = '';
                     data.sessions.forEach(session => {
                         const title = session.source_article?.title || '无标题';
-                        const date = new Date(session.created_at).toLocaleString('zh-CN');
-                        const stageText = getStageText(session.stage);
+                        const date = session.created_at ? new Date(session.created_at).toLocaleString('zh-CN') : '';
+                        const stageText = {
+                            'completed': '已完成',
+                            'tuning': '改写中',
+                            'waiting_outline': '大纲待确认',
+                            'cancelled': '已取消',
+                        }[session.stage] || session.stage;
 
                         html += `
-                            <div class="history-item" onclick="showSessionDetail('${session.id}')">
-                                <div class="history-item-info">
+                            <div class="history-item" data-session-id="${session.session_id}">
+                                <input type="checkbox" class="history-checkbox"
+                                    data-session-id="${session.session_id}"
+                                    onclick="toggleSessionSelect('${session.session_id}')">
+                                <div class="history-item-info" onclick="showSessionDetail('${session.session_id}')">
                                     <div class="history-item-title">${escapeHtml(title.substring(0, 50))}</div>
                                     <div class="history-item-meta">${date}</div>
                                 </div>
                                 <span class="history-item-stage">${stageText}</span>
+                                <button class="history-delete-btn" onclick="event.stopPropagation(); deleteSingleSession('${session.session_id}')">
+                                    🗑️
+                                </button>
                             </div>
                         `;
                     });
                     document.getElementById('history-list').innerHTML = html;
+                    updateSelectUI();
                 } else {
                     document.getElementById('history-list').innerHTML = '<p class="empty-text">暂无历史记录</p>';
+                    document.getElementById('history-action-bar').style.display = 'none';
                 }
             } catch (error) {
                 document.getElementById('history-list').innerHTML = '<p class="empty-text">加载失败: ' + error.message + '</p>';
@@ -2895,6 +3090,149 @@
 
         function closeHistoryModal() {
             document.getElementById('history-modal').style.display = 'none';
+        }
+
+        function toggleSessionSelect(sessionId) {
+            const index = selectedSessionIds.indexOf(sessionId);
+            if (index > -1) {
+                selectedSessionIds.splice(index, 1);
+            } else {
+                selectedSessionIds.push(sessionId);
+            }
+            updateSelectUI();
+        }
+
+        function toggleSelectAll() {
+            const checkboxes = document.querySelectorAll('.history-checkbox');
+            const allChecked = selectedSessionIds.length === checkboxes.length;
+
+            if (allChecked) {
+                selectedSessionIds = [];
+            } else {
+                selectedSessionIds = [];
+                checkboxes.forEach(cb => {
+                    const sessionId = cb.getAttribute('data-session-id');
+                    if (sessionId) selectedSessionIds.push(sessionId);
+                });
+            }
+            updateSelectUI();
+        }
+
+        function updateSelectUI() {
+            // 更新 checkbox 状态
+            const checkboxes = document.querySelectorAll('.history-checkbox');
+            checkboxes.forEach(cb => {
+                const sessionId = cb.getAttribute('data-session-id');
+                cb.checked = selectedSessionIds.includes(sessionId);
+            });
+
+            // 更新全选 checkbox
+            const selectAllCb = document.getElementById('history-select-all');
+            if (selectAllCb) {
+                selectAllCb.checked = selectedSessionIds.length > 0 &&
+                    selectedSessionIds.length === checkboxes.length;
+            }
+
+            // 显示/隐藏操作栏
+            const actionBar = document.getElementById('history-action-bar');
+            if (actionBar) {
+                actionBar.style.display = selectedSessionIds.length > 0 ? 'flex' : 'none';
+            }
+
+            // 更新选中数量
+            const selectedCount = document.getElementById('history-selected-count');
+            if (selectedCount) {
+                selectedCount.textContent = selectedSessionIds.length;
+            }
+        }
+
+        function showDeleteConfirm(count, onConfirm) {
+            const modal = document.getElementById('delete-confirm-modal');
+            const message = document.getElementById('delete-confirm-message');
+            const confirmBtn = document.getElementById('delete-confirm-btn');
+
+            message.textContent = `确定删除 ${count} 条记录？此操作不可恢复。`;
+            modal.style.display = 'flex';
+
+            // 移除旧的事件监听器
+            const newConfirmBtn = confirmBtn.cloneNode(true);
+            confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+
+            newConfirmBtn.addEventListener('click', () => {
+                modal.style.display = 'none';
+                onConfirm();
+            });
+        }
+
+        function closeDeleteConfirmModal() {
+            document.getElementById('delete-confirm-modal').style.display = 'none';
+        }
+
+        async function deleteSingleSession(sessionId) {
+            showDeleteConfirm(1, async () => {
+                try {
+                    const response = await fetch(`/api/deep_mode/history/${sessionId}`, {
+                        method: 'DELETE'
+                    });
+                    const data = await response.json();
+
+                    if (data.success) {
+                        refreshHistoryList();
+                    } else {
+                        alert('删除失败: ' + data.error);
+                    }
+                } catch (error) {
+                    alert('删除失败: ' + error.message);
+                }
+            });
+        }
+
+        async function deleteSelectedSessions() {
+            if (selectedSessionIds.length === 0) return;
+
+            showDeleteConfirm(selectedSessionIds.length, async () => {
+                try {
+                    const response = await fetch('/api/deep_mode/history/batch_delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_ids: selectedSessionIds })
+                    });
+                    const data = await response.json();
+
+                    if (data.success) {
+                        selectedSessionIds = [];
+                        refreshHistoryList();
+                    } else {
+                        alert('删除失败: ' + data.error);
+                    }
+                } catch (error) {
+                    alert('删除失败: ' + error.message);
+                }
+            });
+        }
+
+        async function clearAllHistory() {
+            showDeleteConfirm('所有', async () => {
+                try {
+                    const response = await fetch('/api/deep_mode/history/clear_all', {
+                        method: 'DELETE'
+                    });
+                    const data = await response.json();
+
+                    if (data.success) {
+                        selectedSessionIds = [];
+                        refreshHistoryList();
+                    } else {
+                        alert('清空失败: ' + data.error);
+                    }
+                } catch (error) {
+                    alert('清空失败: ' + error.message);
+                }
+            });
+        }
+
+        function refreshHistoryList() {
+            showHistoryModal();
         }
 
         function getStageText(stage) {
@@ -2908,10 +3246,18 @@
             return stageMap[stage] || stage;
         }
 
+        // 当前历史会话数据（用于下载）
+        let currentHistorySessionData = null;
+
         async function showSessionDetail(sessionId) {
             currentHistorySessionId = sessionId;
+            currentHistorySessionData = null;  // 重置
             document.getElementById('session-detail-modal').style.display = 'flex';
             document.getElementById('session-detail-content').innerHTML = '<p class="loading-text">加载中...</p>';
+
+            // 隐藏下载按钮（加载完成后根据内容显示）
+            document.getElementById('history-download-text-btn').style.display = 'none';
+            document.getElementById('history-download-video-btn').style.display = 'none';
 
             try {
                 // 获取会话详情（包含文章内容）
@@ -2924,45 +3270,62 @@
                 const messagesResponse = await fetch(`/api/deep_mode/session/${sessionId}/messages`);
                 const messagesData = await messagesResponse.json();
 
+                // 保存会话数据用于下载
+                currentHistorySessionData = {
+                    session: sessionData.session,
+                    messages: messagesData.messages
+                };
+
                 let html = '';
 
-                // 显示源文章
+                // 显示源文章（完整内容）
                 if (sessionData.session && sessionData.session.source_article) {
                     const article = sessionData.session.source_article;
                     html += '<div class="source-article">';
                     html += '<h3>📄 原文章</h3>';
                     html += `<div class="article-title"><strong>标题：</strong>${escapeHtml(article.title || '无标题')}</div>`;
-                    html += `<div class="article-text" style="margin-top:10px;white-space:pre-wrap;"><strong>内容：</strong>${escapeHtml(article.text ? article.text.substring(0, 500) + (article.text.length > 500 ? '...' : '') : '无内容')}</div>`;
+                    html += `<div class="article-text" style="margin-top:10px;white-space:pre-wrap;max-height:300px;overflow-y:auto;background:#f9f9f9;padding:10px;border-radius:4px;"><strong>内容：</strong>${escapeHtml(article.text || '无内容')}</div>`;
                     html += '</div>';
                 }
 
-                // 显示当前草稿（如果有）
+                // 显示当前草稿（完整内容）
                 if (sessionData.session && sessionData.session.current_draft) {
                     html += '<div class="source-article" style="margin-top:15px;background:#e8f5e9;">';
-                    html += '<h3>📝 当前草稿</h3>';
-                    html += `<div class="draft-content" style="white-space:pre-wrap;">${escapeHtml(sessionData.session.current_draft.substring(0, 1000))}${sessionData.session.current_draft.length > 1000 ? '...' : ''}</div>`;
+                    html += '<h3>📝 生成的文章（完整内容）</h3>';
+                    html += `<div class="draft-content" style="white-space:pre-wrap;max-height:400px;overflow-y:auto;background:#fff;padding:10px;border-radius:4px;border:1px solid #ddd;">${escapeHtml(sessionData.session.current_draft)}</div>`;
+
+                    // 显示下载按钮
+                    document.getElementById('history-download-text-btn').style.display = 'inline-block';
                     html += '</div>';
                 }
 
-                // 显示对话记录
+                // 显示对话记录（完整内容）
                 if (messagesData.messages && messagesData.messages.length > 0) {
                     html += '<div class="source-article" style="margin-top:15px;">';
-                    html += '<h3>💬 对话记录</h3>';
-                    html += '<div class="session-messages">';
+                    html += '<h3>💬 微调对话记录（完整）</h3>';
+                    html += '<div class="session-messages" style="max-height:400px;overflow-y:auto;">';
 
                     messagesData.messages.forEach(msg => {
                         const roleText = msg.role === 'user' ? '👤 用户' : '🤖 AI';
-                        const time = new Date(msg.created_at).toLocaleString('zh-CN');
+                        const time = msg.timestamp ? new Date(msg.timestamp).toLocaleString('zh-CN') : '';
+                        const msgClass = msg.role === 'user' ? 'user-message' : 'agent-message';
                         html += `
-                            <div class="session-message ${msg.role}">
-                                <div class="role">${roleText} · ${time}</div>
-                                <div class="content">${escapeHtml(msg.content.substring(0, 200))}${msg.content.length > 200 ? '...' : ''}</div>
+                            <div class="session-message ${msgClass}" style="padding:10px;margin-bottom:10px;background:${msg.role === 'user' ? '#e3f2fd' : '#e8f5e9'};border-radius:8px;">
+                                <div class="role" style="font-weight:bold;color:#666;">${roleText} · ${time}</div>
+                                <div class="content" style="white-space:pre-wrap;margin-top:5px;">${escapeHtml(msg.content)}</div>
                             </div>
                         `;
                     });
 
                     html += '</div></div>';
-                } else if (!sessionData.session?.current_draft && !sessionData.session?.source_article) {
+                }
+
+                // 检查是否有视频可下载
+                if (sessionData.session && sessionData.session.video_path) {
+                    document.getElementById('history-download-video-btn').style.display = 'inline-block';
+                }
+
+                if (!sessionData.session?.current_draft && !sessionData.session?.source_article && !messagesData.messages?.length) {
                     html = '<p class="empty-text">暂无内容</p>';
                 }
 
@@ -2975,6 +3338,83 @@
         function closeSessionDetailModal() {
             document.getElementById('session-detail-modal').style.display = 'none';
             currentHistorySessionId = null;
+            currentHistorySessionData = null;
+        }
+
+        // 下载历史会话的文本内容
+        function downloadHistoryText() {
+            if (!currentHistorySessionData || !currentHistorySessionData.session) {
+                showNotification('没有可下载的内容', 'error');
+                return;
+            }
+
+            const session = currentHistorySessionData.session;
+            const title = session.source_article?.title || '文章';
+            const draft = session.current_draft || session.final_draft || '';
+
+            if (!draft) {
+                showNotification('没有生成的文本内容', 'error');
+                return;
+            }
+
+            // 创建下载内容
+            let content = `标题: ${title}\n\n`;
+            content += `生成时间: ${new Date(session.updated_at || session.created_at).toLocaleString('zh-CN')}\n\n`;
+            content += `========================================\n`;
+            content += `生成的文章内容:\n`;
+            content += `========================================\n\n`;
+            content += draft;
+
+            // 如果有对话记录，也包含
+            if (currentHistorySessionData.messages && currentHistorySessionData.messages.length > 0) {
+                content += `\n\n========================================\n`;
+                content += `微调对话记录:\n`;
+                content += `========================================\n\n`;
+                currentHistorySessionData.messages.forEach(msg => {
+                    const role = msg.role === 'user' ? '用户' : 'AI';
+                    content += `[${role}]: ${msg.content}\n\n`;
+                });
+            }
+
+            // 下载
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `article_${currentHistorySessionId || 'history'}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showNotification('文本已下载', 'success');
+        }
+
+        // 下载历史会话的视频
+        function downloadHistoryVideo() {
+            if (!currentHistorySessionData || !currentHistorySessionData.session) {
+                showNotification('没有可下载的视频', 'error');
+                return;
+            }
+
+            const session = currentHistorySessionData.session;
+            const videoPath = session.video_path;
+
+            if (!videoPath) {
+                showNotification('该会话没有生成视频', 'error');
+                return;
+            }
+
+            // 使用API下载
+            const downloadUrl = `/api/download_file?file=${encodeURIComponent(videoPath)}`;
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = `digital_human_${currentHistorySessionId || 'video'}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            showNotification('视频已下载', 'success');
         }
 
         async function restoreSession() {
@@ -3006,53 +3446,64 @@
             deepSessionId = session.session_id;
             deepSession = session;
 
-            // 隐藏其他section，显示深度生成相关界面
+            // 隐藏其他section
             document.getElementById('articles-section').style.display = 'none';
             document.getElementById('mode-selection-section').style.display = 'none';
             document.getElementById('processing-section').style.display = 'none';
             document.getElementById('result-section').style.display = 'none';
 
+            // 隐藏所有深度生成 section
+            document.getElementById('deep-profile-section').style.display = 'none';
+            document.getElementById('deep-outline-section').style.display = 'none';
+            document.getElementById('deep-content-section').style.display = 'none';
+            document.getElementById('deep-chat-section').style.display = 'none';
+            document.getElementById('deep-finalized-section').style.display = 'none';
+
             // 根据stage显示对应界面
             if (session.stage === 'waiting_outline') {
                 // 显示大纲确认界面
                 document.getElementById('deep-outline-section').style.display = 'block';
-                document.getElementById('deep-outline-content').textContent = session.outline || '无大纲';
-                document.getElementById('deep-content-preview-section').style.display = 'none';
-                document.getElementById('deep-chat-section').style.display = 'none';
+                document.getElementById('deep-outline-content').value = session.outline || '无大纲';
             } else if (session.stage === 'tuning') {
                 // 显示微调对话界面
-                document.getElementById('deep-outline-section').style.display = 'none';
-                document.getElementById('deep-content-preview-section').style.display = 'block';
-                document.getElementById('deep-preview-content').textContent = session.current_draft || '无内容';
+                const content = session.current_draft || '无内容';
+                document.getElementById('deep-chat-content-preview').value = content;
                 document.getElementById('deep-chat-section').style.display = 'block';
 
                 // 恢复对话历史
                 if (session.tuning_history && session.tuning_history.length > 0) {
-                    let historyHtml = '';
+                    const history = document.getElementById('deep-chat-history');
+                    history.innerHTML = '';
                     session.tuning_history.forEach(msg => {
-                        historyHtml += `<div class="chat-message ${msg.role}">
-                            <span class="chat-role">${msg.role === 'user' ? '👤' : '🤖'}</span>
-                            <div class="chat-content">${escapeHtml(msg.content)}</div>
-                        </div>`;
+                        addChatMessage(msg.role, msg.content);
                     });
-                    document.getElementById('deep-chat-history').innerHTML = historyHtml;
                 }
 
-                // 建立WebSocket连接
-                connectDeepModeWebSocket(session.session_id);
+                // 建立WebSocket连接（使用简化版本，不隐藏 content section）
+                const wsUrl = `ws://${location.host}/ws/deep_mode/${deepSessionId}`;
+                deepWebSocket = new WebSocket(wsUrl);
+                deepWebSocket.onopen = function() {
+                    deepWsConnected = true;
+                    showNotification('对话连接成功', 'success');
+                };
+                deepWebSocket.onmessage = function(event) {
+                    handleDeepChatMessage(JSON.parse(event.data));
+                };
+                deepWebSocket.onerror = function() {
+                    showNotification('WebSocket 连接失败', 'error');
+                };
+                deepWebSocket.onclose = function() {
+                    deepWsConnected = false;
+                };
             } else if (session.stage === 'completed') {
-                // 显示最终结果
-                document.getElementById('deep-outline-section').style.display = 'none';
-                document.getElementById('deep-content-preview-section').style.display = 'block';
-                document.getElementById('deep-preview-content').textContent = session.final_draft || session.current_draft || '无内容';
-                document.getElementById('deep-chat-section').style.display = 'none';
-                showNotification('此会话已定稿，可以复制内容', 'info');
+                // 显示定稿成功界面
+                document.getElementById('deep-final-content').value = session.final_draft || session.current_draft || '无内容';
+                document.getElementById('deep-finalized-section').style.display = 'block';
+                showNotification('此会话已定稿，可以下载或生成视频', 'info');
             } else {
                 // 其他状态（planning, executing）
                 showNotification('会话状态: ' + session.stage + '，请重新操作', 'warning');
             }
-
-            showSection('deep');
         }
     </script>
 </body>

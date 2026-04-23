@@ -409,6 +409,12 @@ class OutlineActionRequest(BaseModel):
 class FinalizeRequest(BaseModel):
     """定稿请求。"""
     session_id: str
+    content: str = None  # 用户编辑后的内容（可选）
+
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求。"""
+    session_ids: list[str]
 
 
 @app.post("/api/generate_digital_human")
@@ -482,13 +488,28 @@ async def generate_digital_human_video(request: GenerateDigitalHumanRequest):
         # 保存初始状态
         save_task_status(task_id, TaskStatus.PENDING)
 
+        # 如果有 session_id，保存视频任务信息到 session
+        if request.session_id:
+            try:
+                session_manager = get_session_manager()
+                await session_manager.update_session(
+                    request.session_id,
+                    video_task_id=task_id,
+                    video_status="pending",
+                    video_path=video_path  # 预设路径，完成后更新
+                )
+                logger.info(f"[API] Video task linked to session: {request.session_id}")
+            except Exception as e:
+                logger.warning(f"[API] Failed to link video to session: {e}")
+
         # 启动后台任务（传递头像 URL 和语音）
         asyncio.create_task(run_generation_task(
             task_id,
             request.content,
             video_path,
             avatar_url=final_avatar_url,
-            voice=request.voice
+            voice=request.voice,
+            session_id=request.session_id  # 传递 session_id 用于完成时更新
         ))
 
         logger.info(f"[API] Task created: {task_id}, avatar: {request.avatar}, avatar_url: {final_avatar_url[:50] if final_avatar_url else 'default'}, voice: {request.voice}")
@@ -896,17 +917,26 @@ async def api_outline_action(request: OutlineActionRequest):
 
 @app.post("/api/deep_mode/finalize")
 async def api_finalize_session(request: FinalizeRequest):
-    """定稿会话（Phase 1 版本，直接返回定稿内容）。"""
+    """定稿会话（支持用户编辑后的内容）。"""
     logger.info(f"[API] Finalize session: {request.session_id}")
 
     session_manager = get_session_manager()
 
     try:
+        # 如果用户提供了编辑后的内容，先更新 session
+        if request.content:
+            logger.info(f"[API] User provided edited content: {len(request.content)} chars")
+            await session_manager.update_session(
+                request.session_id,
+                current_draft=request.content
+            )
+
         session = await session_manager.finalize_session(request.session_id)
         return {
             "status": "completed",
             "session_id": session["session_id"],
             "final_draft": session["final_draft"],
+            "current_draft": request.content or session["final_draft"],  # 返回用户编辑的内容
             "finalized_at": session["finalized_at"],
         }
     except SessionNotFoundError:
@@ -930,6 +960,53 @@ async def api_cancel_session(session_id: str):
         return {"error": "Session not found"}, 404
 
 
+@app.delete("/api/deep_mode/history/{session_id}")
+async def api_delete_history_session(session_id: str):
+    """软删除历史记录。"""
+    logger.info(f"[API] Delete history session: {session_id}")
+
+    session_manager = get_session_manager()
+
+    try:
+        success = await session_manager.soft_delete_session(session_id)
+        if not success:
+            return {"success": False, "error": "会话不存在或已删除"}, 404
+        return {"success": True, "status": "deleted", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"[API] Delete error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/deep_mode/history/batch_delete")
+async def api_batch_delete_history(request: BatchDeleteRequest):
+    """批量软删除历史记录。"""
+    logger.info(f"[API] Batch delete {len(request.session_ids)} sessions")
+
+    session_manager = get_session_manager()
+
+    try:
+        count = await session_manager.soft_delete_sessions(request.session_ids)
+        return {"success": True, "status": "deleted", "count": count}
+    except Exception as e:
+        logger.error(f"[API] Batch delete error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/deep_mode/history/clear_all")
+async def api_clear_all_history():
+    """清空所有历史记录。"""
+    logger.info(f"[API] Clear all history")
+
+    session_manager = get_session_manager()
+
+    try:
+        count = await session_manager.soft_delete_all_sessions()
+        return {"success": True, "status": "deleted", "count": count}
+    except Exception as e:
+        logger.error(f"[API] Clear all error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/deep_mode/sessions")
 async def api_list_sessions(article_id: str = None, stage: str = None):
     """列出会话。"""
@@ -939,10 +1016,10 @@ async def api_list_sessions(article_id: str = None, stage: str = None):
     return {
         "sessions": [
             {
-                "session_id": s["session_id"],
-                "article_id": s["article_id"],
-                "stage": s["stage"],
-                "created_at": s["created_at"],
+                "session_id": s.get("session_id") or s.get("id"),
+                "article_id": s.get("article_id", ""),
+                "stage": s.get("stage"),
+                "created_at": s.get("created_at"),
             }
             for s in sessions
         ],

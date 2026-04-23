@@ -79,12 +79,12 @@ class PGSessionManager:
         return True
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """获取会话记录。"""
+        """获取会话记录（已删除返回 None）。"""
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT * FROM sessions WHERE id = $1
+                SELECT * FROM sessions WHERE id = $1 AND deleted_at IS NULL
                 """,
                 UUID(session_id),
             )
@@ -196,13 +196,14 @@ class PGSessionManager:
         limit: int = 20,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """获取历史会话列表。"""
+        """获取历史会话列表（过滤已删除）。"""
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, source_article, stage, created_at, finalized_at
                 FROM sessions
+                WHERE deleted_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT $1 OFFSET $2
                 """,
@@ -305,8 +306,9 @@ class PGSessionManager:
     def _row_to_dict(self, row: asyncpg.Record) -> Dict[str, Any]:
         """转换数据库行到字典。"""
         result = dict(row)
-        # 处理 UUID
+        # 处理 UUID - 将 id 映射为 session_id
         if "id" in result and isinstance(result["id"], UUID):
+            result["session_id"] = str(result["id"])
             result["id"] = str(result["id"])
         if "session_id" in result and isinstance(result["session_id"], UUID):
             result["session_id"] = str(result["session_id"])
@@ -323,6 +325,61 @@ class PGSessionManager:
                 except json.JSONDecodeError:
                     pass
         return result
+
+
+    # ---- 软删除操作 ----
+
+    async def soft_delete_session(self, session_id: str) -> bool:
+        """软删除单条会话。"""
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sessions SET deleted_at = $2
+                WHERE id = $1 AND deleted_at IS NULL
+                """,
+                UUID(session_id),
+                datetime.now(),
+            )
+        if result == "UPDATE 1":
+            logger.info(f"[PG] Session soft deleted: {session_id}")
+            return True
+        logger.warning(f"[PG] Session not found or already deleted: {session_id}")
+        return False
+
+    async def soft_delete_sessions(self, session_ids: List[str]) -> int:
+        """批量软删除会话。"""
+        if not session_ids:
+            return 0
+        pool = await get_pg_pool()
+        uuids = [UUID(sid) for sid in session_ids]
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sessions SET deleted_at = $2
+                WHERE id = ANY($1) AND deleted_at IS NULL
+                """,
+                uuids,
+                datetime.now(),
+            )
+        count = int(result.split()[-1]) if result.startswith("UPDATE") else 0
+        logger.info(f"[PG] Batch soft deleted {count} sessions")
+        return count
+
+    async def soft_delete_all_sessions(self) -> int:
+        """软删除所有会话（清空历史）。"""
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sessions SET deleted_at = $1
+                WHERE deleted_at IS NULL
+                """,
+                datetime.now(),
+            )
+        count = int(result.split()[-1]) if result.startswith("UPDATE") else 0
+        logger.info(f"[PG] All sessions soft deleted: {count}")
+        return count
 
 
 # 全局实例

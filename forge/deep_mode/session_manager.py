@@ -16,6 +16,7 @@ from forge.deep_mode.session_state import (
     STAGE_TUNING,
     STAGE_COMPLETED,
 )
+from forge.deep_mode.errors import SessionNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class SessionManager:
         """更新会话（双写）。"""
         session = await self.load_session(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(f"Session not found: {session_id}")
 
         updated_data = {**session, **updates}
         updated_data["updated_at"] = datetime.now().isoformat()
@@ -191,7 +192,7 @@ class SessionManager:
         """定稿会话。"""
         session = await self.load_session(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(f"Session not found: {session_id}")
 
         final_draft = session.get("current_draft", "") or session.get("draft_v1", "")
 
@@ -212,7 +213,9 @@ class SessionManager:
         return {
             "session_id": session_id,
             "final_draft": final_draft,
+            "current_draft": final_draft,
             "status": "completed",
+            "finalized_at": datetime.now().isoformat(),
         }
 
     # ---- 心跳 ----
@@ -289,7 +292,7 @@ class SessionManager:
         """增加大纲版本号。"""
         session = await self.load_session(session_id)
         if not session:
-            raise ValueError(f"Session not found: {session_id}")
+            raise SessionNotFoundError(f"Session not found: {session_id}")
 
         new_version = session.get("outline_version", 0) + 1
 
@@ -342,6 +345,71 @@ class SessionManager:
     async def cancel_session(self, session_id: str) -> DeepModeSession:
         """取消会话。"""
         return await self.update_session(session_id, stage="cancelled")
+
+    # ---- 软删除操作 ----
+
+    async def soft_delete_session(self, session_id: str) -> bool:
+        """软删除单条会话（双写清理）。"""
+        # PG 软删除
+        try:
+            success = await self.pg.soft_delete_session(session_id)
+            if not success:
+                logger.warning(f"[SessionManager] Session not found: {session_id}")
+                return False
+        except Exception as e:
+            logger.error(f"[SessionManager] PG soft delete failed: {e}")
+            raise
+
+        # Redis 清理（失败可忽略）
+        try:
+            await self.redis.delete_session(session_id)
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis cleanup failed: {e}")
+
+        logger.info(f"[SessionManager] Session soft deleted: {session_id}")
+        return True
+
+    async def soft_delete_sessions(self, session_ids: List[str]) -> int:
+        """批量软删除会话。"""
+        if not session_ids:
+            return 0
+
+        # PG 批量软删除
+        try:
+            count = await self.pg.soft_delete_sessions(session_ids)
+        except Exception as e:
+            logger.error(f"[SessionManager] PG batch delete failed: {e}")
+            raise
+
+        # Redis 批量清理
+        for sid in session_ids:
+            try:
+                await self.redis.delete_session(sid)
+            except Exception as e:
+                logger.warning(f"[SessionManager] Redis cleanup failed for {sid}: {e}")
+
+        logger.info(f"[SessionManager] Batch soft deleted {count} sessions")
+        return count
+
+    async def soft_delete_all_sessions(self) -> int:
+        """软删除所有会话（清空历史）。"""
+        # PG 清空
+        try:
+            count = await self.pg.soft_delete_all_sessions()
+        except Exception as e:
+            logger.error(f"[SessionManager] PG clear all failed: {e}")
+            raise
+
+        # Redis 清空（可选，清理所有缓存）
+        try:
+            # 注意：这里不清理所有 Redis key，只清理已知的 session 缓存
+            # Redis 使用 TTL 自动过期，不需要主动清理
+            logger.info("[SessionManager] Redis sessions will expire by TTL")
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis cleanup skipped: {e}")
+
+        logger.info(f"[SessionManager] All sessions soft deleted: {count}")
+        return count
 
     # ---- 清理过期会话 ----
 
