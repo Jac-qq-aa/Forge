@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,45 @@ from jinja2 import Environment, FileSystemLoader
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Setup logging (must be before lifespan)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(name)-12s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("ForgeWeb")
+
+from forge.storage.redis_client import close_redis_pool
+from forge.storage.pg_client import close_pg_pool, get_pg_pool
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理 - 初始化和清理连接池。"""
+    # 启动时初始化 PG 连接池
+    try:
+        await get_pg_pool()
+        logger.info("[Lifespan] PG connection pool initialized")
+    except Exception as e:
+        logger.warning(f"[Lifespan] PG connection pool init failed (will use fallback): {e}")
+
+    yield
+
+    # 关闭时清理连接池
+    try:
+        await close_redis_pool()
+        logger.info("[Lifespan] Redis connection pool closed")
+    except Exception as e:
+        logger.warning(f"[Lifespan] Redis close error: {e}")
+
+    try:
+        await close_pg_pool()
+        logger.info("[Lifespan] PG connection pool closed")
+    except Exception as e:
+        logger.warning(f"[Lifespan] PG close error: {e}")
+
+
 from forge.graph import workflow, create_initial_state
 from forge.deep_mode import (
     DeepModeSession,
@@ -28,17 +68,8 @@ from forge.deep_mode.session_manager import get_session_manager
 from forge.deep_mode.workflow import run_plan_execute
 from forge.deep_mode.websocket_handler import handle_websocket_connection
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)-12s | %(levelname)-8s | %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stdout,
-)
-logger = logging.getLogger("ForgeWeb")
-
-# Create FastAPI app
-app = FastAPI(title="Forge 内容转换工作流")
+# Create FastAPI app with lifespan
+app = FastAPI(title="Forge 内容转换工作流", lifespan=lifespan)
 
 # CORS configuration for React frontend
 app.add_middleware(
