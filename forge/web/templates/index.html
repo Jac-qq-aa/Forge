@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Forge - 锐博集团内容转换平台</title>
-    <link rel="stylesheet" href="/static/style.css?v=9">
+    <link rel="stylesheet" href="/static/style.css?v=10">
 </head>
 <body>
     <!-- Logo 在右上角 -->
@@ -14,7 +14,38 @@
     <header class="main-header">
         <h1 class="main-title">Forge 内容转换平台</h1>
         <p class="main-subtitle">智能抓取 · AI改写 · 内容发布</p>
+        <button class="btn btn-small history-btn" onclick="showHistoryModal()">📜 历史记录</button>
     </header>
+
+    <!-- 历史记录弹窗 -->
+    <div id="history-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📜 历史会话记录</h2>
+                <button class="modal-close" onclick="closeHistoryModal()">×</button>
+            </div>
+            <div id="history-list" class="history-list">
+                <p class="loading-text">加载中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 会话详情弹窗 -->
+    <div id="session-detail-modal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>📝 会话详情</h2>
+                <button class="modal-close" onclick="closeSessionDetailModal()">×</button>
+            </div>
+            <div id="session-detail-content" class="session-detail">
+                <p class="loading-text">加载中...</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="restoreSession()">恢复此会话</button>
+                <button class="btn btn-secondary" onclick="closeSessionDetailModal()">关闭</button>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         <!-- Step 1: 配置参数 -->
@@ -2822,6 +2853,128 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // ========== 历史记录功能 ==========
+
+        let currentHistorySessionId = null;
+
+        async function showHistoryModal() {
+            document.getElementById('history-modal').style.display = 'flex';
+            document.getElementById('history-list').innerHTML = '<p class="loading-text">加载中...</p>';
+
+            try {
+                const response = await fetch('/api/deep_mode/history?limit=20');
+                const data = await response.json();
+
+                if (data.sessions && data.sessions.length > 0) {
+                    let html = '';
+                    data.sessions.forEach(session => {
+                        const title = session.source_article?.title || '无标题';
+                        const date = new Date(session.created_at).toLocaleString('zh-CN');
+                        const stageText = getStageText(session.stage);
+
+                        html += `
+                            <div class="history-item" onclick="showSessionDetail('${session.id}')">
+                                <div class="history-item-info">
+                                    <div class="history-item-title">${escapeHtml(title.substring(0, 50))}</div>
+                                    <div class="history-item-meta">${date}</div>
+                                </div>
+                                <span class="history-item-stage">${stageText}</span>
+                            </div>
+                        `;
+                    });
+                    document.getElementById('history-list').innerHTML = html;
+                } else {
+                    document.getElementById('history-list').innerHTML = '<p class="empty-text">暂无历史记录</p>';
+                }
+            } catch (error) {
+                document.getElementById('history-list').innerHTML = '<p class="empty-text">加载失败: ' + error.message + '</p>';
+            }
+        }
+
+        function closeHistoryModal() {
+            document.getElementById('history-modal').style.display = 'none';
+        }
+
+        function getStageText(stage) {
+            const stageMap = {
+                'planning': '规划中',
+                'waiting_outline': '待确认大纲',
+                'executing': '生成中',
+                'tuning': '微调中',
+                'completed': '已完成'
+            };
+            return stageMap[stage] || stage;
+        }
+
+        async function showSessionDetail(sessionId) {
+            currentHistorySessionId = sessionId;
+            document.getElementById('session-detail-modal').style.display = 'flex';
+            document.getElementById('session-detail-content').innerHTML = '<p class="loading-text">加载中...</p>';
+
+            try {
+                // 获取会话消息
+                const response = await fetch(`/api/deep_mode/session/${sessionId}/messages`);
+                const data = await response.json();
+
+                let html = '';
+
+                // 显示源文章
+                if (data.messages && data.messages.length > 0) {
+                    html += '<div class="source-article">';
+                    html += '<h3>📝 对话记录</h3>';
+                    html += '<div class="session-messages">';
+
+                    data.messages.forEach(msg => {
+                        const roleText = msg.role === 'user' ? '👤 用户' : '🤖 AI';
+                        const time = new Date(msg.created_at).toLocaleString('zh-CN');
+                        html += `
+                            <div class="session-message ${msg.role}">
+                                <div class="role">${roleText} · ${time}</div>
+                                <div class="content">${escapeHtml(msg.content.substring(0, 200))}${msg.content.length > 200 ? '...' : ''}</div>
+                            </div>
+                        `;
+                    });
+
+                    html += '</div></div>';
+                } else {
+                    html = '<p class="empty-text">暂无对话记录</p>';
+                }
+
+                document.getElementById('session-detail-content').innerHTML = html;
+            } catch (error) {
+                document.getElementById('session-detail-content').innerHTML = '<p class="empty-text">加载失败: ' + error.message + '</p>';
+            }
+        }
+
+        function closeSessionDetailModal() {
+            document.getElementById('session-detail-modal').style.display = 'none';
+            currentHistorySessionId = null;
+        }
+
+        async function restoreSession() {
+            if (!currentHistorySessionId) return;
+
+            try {
+                const response = await fetch(`/api/deep_mode/session/${currentHistorySessionId}/restore`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.restored) {
+                    showNotification('会话已恢复！', 'success');
+                    closeSessionDetailModal();
+                    closeHistoryModal();
+
+                    // TODO: 实际恢复会话到界面
+                    // 这里可以调用 loadSessionToUI(data.session) 来恢复界面状态
+                } else {
+                    showNotification('恢复失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                showNotification('恢复失败: ' + error.message, 'error');
+            }
         }
     </script>
 </body>
