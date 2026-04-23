@@ -1,291 +1,277 @@
 # forge/deep_mode/session_manager.py
 
-"""Session Manager - SQLite 存储和状态注入。"""
+"""会话管理器 - Redis + PostgreSQL 双存储架构。"""
 
-import json
 import logging
-import os
-import asyncio
+from typing import Optional, Dict, Any, List
 from datetime import datetime
-from typing import Optional, List
-import aiosqlite
 
+from forge.storage.redis_client import get_redis_session_manager
+from forge.storage.pg_client import get_pg_session_manager
 from forge.deep_mode.session_state import (
     DeepModeSession,
-    SessionStage,
     create_session_id,
     create_initial_session,
+    STAGE_WAITING_OUTLINE,
+    STAGE_TUNING,
+    STAGE_COMPLETED,
 )
-from forge.deep_mode.errors import SessionNotFoundError, OutlineRevisionLimitError
-from forge.config import DEEP_MODE_SESSION_TTL, OUTLINE_MAX_REVISIONS
 
 logger = logging.getLogger(__name__)
 
-# SQLite 数据库路径
-SESSION_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "sessions.db")
-
 
 class SessionManager:
-    """深度生成会话管理器。"""
+    """双存储会话管理器。
 
-    def __init__(self, db_path: str = SESSION_DB_PATH):
-        self.db_path = db_path
-        self._initialized = False
-        self._init_lock = asyncio.Lock()
+    Redis：活跃会话缓存（30分钟 TTL）
+    PostgreSQL：持久化存储（历史记录）
+    """
 
-    async def _ensure_db(self):
-        """确保数据库和表已创建（带锁保护，防止竞态条件）。"""
-        async with self._init_lock:
-            if self._initialized:
-                return
+    def __init__(self):
+        self.redis = get_redis_session_manager()
+        self.pg = get_pg_session_manager()
 
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS deep_mode_sessions (
-                        session_id TEXT PRIMARY KEY,
-                        article_id TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        stage TEXT NOT NULL,
-                        profile TEXT NOT NULL,
-                        outline TEXT NOT NULL,
-                        outline_version INTEGER NOT NULL,
-                        draft_v1 TEXT NOT NULL,
-                        current_draft TEXT NOT NULL,
-                        tuning_history TEXT NOT NULL,
-                        source_article TEXT NOT NULL,
-                        rag_context TEXT NOT NULL,
-                        final_draft TEXT NOT NULL,
-                        finalized_at TEXT
-                    )
-                """)
-                # 创建索引以优化常用查询
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_sessions_article_id
-                    ON deep_mode_sessions(article_id)
-                """)
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_sessions_stage
-                    ON deep_mode_sessions(stage)
-                """)
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_sessions_created_at
-                    ON deep_mode_sessions(created_at)
-                """)
-                await db.commit()
-
-            self._initialized = True
-            logger.info(f"[SessionManager] Database initialized: {self.db_path}")
+    # ---- 创建会话 ----
 
     async def create_session(
         self,
-        article_id: str,
-        source_article: dict,
-        profile: dict = None
+        source_article: Dict[str, str],
+        user_input: str = "",
+        session_id: str = None
     ) -> DeepModeSession:
-        """创建新会话。"""
-        await self._ensure_db()
+        """创建新会话（双写）。"""
+        if session_id is None:
+            session_id = create_session_id()
 
-        session = create_initial_session(article_id, source_article, profile)
+        session_data = create_initial_session(
+            source_article=source_article,
+            user_input=user_input,
+            session_id=session_id,
+        )
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO deep_mode_sessions (
-                    session_id, article_id, created_at, updated_at, stage,
-                    profile, outline, outline_version, draft_v1, current_draft,
-                    tuning_history, source_article, rag_context, final_draft, finalized_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                session["session_id"],
-                session["article_id"],
-                session["created_at"],
-                session["updated_at"],
-                session["stage"],
-                json.dumps(session["profile"]),
-                session["outline"],
-                session["outline_version"],
-                session["draft_v1"],
-                session["current_draft"],
-                json.dumps(session["tuning_history"]),
-                json.dumps(session["source_article"]),
-                session["rag_context"],
-                session["final_draft"],
-                session["finalized_at"],
-            ))
-            await db.commit()
+        # 双写：Redis + PG
+        await self.redis.create_session(session_id, session_data)
+        await self.pg.create_session(session_id, session_data)
 
-        logger.info(f"[SessionManager] Session created: {session['session_id']}")
-        return session
+        logger.info(f"[SessionManager] Session created: {session_id}")
+        return session_data
 
-    async def load_session(self, session_id: str) -> DeepModeSession:
-        """加载会话。"""
-        await self._ensure_db()
+    # ---- 加载会话 ----
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM deep_mode_sessions WHERE session_id = ?",
-                (session_id,)
-            )
-            row = await cursor.fetchone()
+    async def load_session(self, session_id: str) -> Optional[DeepModeSession]:
+        """加载会话（优先 Redis，降级 PG）。"""
+        # 优先从 Redis 获取
+        session = await self.redis.get_session(session_id)
+        if session:
+            # 补充消息历史
+            messages = await self.redis.get_messages(session_id)
+            session["tuning_history"] = messages
+            logger.info(f"[SessionManager] Session loaded from Redis: {session_id}")
+            return session
 
-            if row is None:
-                raise SessionNotFoundError(session_id)
+        # Redis 无数据，尝试从 PG 恢复
+        session = await self.pg.get_session(session_id)
+        if session:
+            # 检查是否活跃
+            if session.get("is_active", True):
+                # 从 PG 获取消息历史
+                messages = await self.pg.get_messages(session_id)
+                session["tuning_history"] = messages
 
-            return DeepModeSession(
-                session_id=row["session_id"],
-                article_id=row["article_id"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                stage=row["stage"],
-                profile=json.loads(row["profile"]),
-                outline=row["outline"],
-                outline_version=row["outline_version"],
-                draft_v1=row["draft_v1"],
-                current_draft=row["current_draft"],
-                tuning_history=json.loads(row["tuning_history"]),
-                source_article=json.loads(row["source_article"]),
-                rag_context=row["rag_context"],
-                final_draft=row["final_draft"],
-                finalized_at=row["finalized_at"],
-            )
+                # 恢复到 Redis
+                await self.redis.create_session(session_id, session)
+                for msg in messages:
+                    await self.redis.append_message(session_id, msg)
 
-    async def update_session(self, session_id: str, **updates) -> DeepModeSession:
-        """更新会话字段。"""
-        await self._ensure_db()
+                logger.info(f"[SessionManager] Session restored from PG: {session_id}")
+                return session
 
+        logger.warning(f"[SessionManager] Session not found: {session_id}")
+        return None
+
+    # ---- 更新会话 ----
+
+    async def update_session(
+        self,
+        session_id: str,
+        **updates
+    ) -> DeepModeSession:
+        """更新会话（双写）。"""
+        # 获取当前状态
         session = await self.load_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
 
-        # 更新字段
-        for key, value in updates.items():
-            if key in session:
-                session[key] = value
+        # 合并更新
+        updated_data = {**session, **updates}
+        updated_data["updated_at"] = datetime.now().isoformat()
 
-        session["updated_at"] = datetime.now().isoformat()
+        # 更新 Redis
+        await self.redis.update_session(session_id, updates)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                UPDATE deep_mode_sessions SET
-                    updated_at = ?, stage = ?, profile = ?, outline = ?,
-                    outline_version = ?, draft_v1 = ?, current_draft = ?,
-                    tuning_history = ?, rag_context = ?, final_draft = ?, finalized_at = ?
-                WHERE session_id = ?
-            """, (
-                session["updated_at"],
-                session["stage"],
-                json.dumps(session["profile"]),
-                session["outline"],
-                session["outline_version"],
-                session["draft_v1"],
-                session["current_draft"],
-                json.dumps(session["tuning_history"]),
-                session["rag_context"],
-                session["final_draft"],
-                session["finalized_at"],
+        # 关键节点写入 PG
+        stage = updates.get("stage")
+        if stage in (STAGE_WAITING_OUTLINE, STAGE_TUNING, STAGE_COMPLETED):
+            await self.pg.update_session(session_id, updated_data)
+
+        # 保存版本（如果草稿更新）
+        if "current_draft" in updates and updates["current_draft"]:
+            version = session.get("outline_version", 0) + 1
+            await self.pg.save_version(
                 session_id,
-            ))
-            await db.commit()
+                version=version,
+                draft=updates["current_draft"],
+            )
 
-        logger.info(f"[SessionManager] Session updated: {session_id}, stage={session['stage']}")
-        return session
+        logger.info(f"[SessionManager] Session updated: {session_id}")
+        return updated_data
 
-    async def update_stage(self, session_id: str, stage: SessionStage) -> DeepModeSession:
-        """更新会话阶段。"""
-        return await self.update_session(session_id, stage=stage)
+    # ---- 消息操作 ----
+
+    async def append_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        is_question: bool = False,
+        metadata: Dict[str, Any] = None
+    ) -> bool:
+        """追加消息（双写）。"""
+        message = {
+            "role": role,
+            "content": content,
+            "is_question": is_question,
+            "metadata": metadata,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # 双写
+        await self.redis.append_message(session_id, message)
+        await self.pg.append_message(session_id, message)
+
+        # 刷新 TTL（心跳）
+        await self.redis.refresh_ttl(session_id)
+
+        return True
+
+    # ---- 定稿 ----
+
+    async def finalize_session(self, session_id: str) -> Dict[str, Any]:
+        """定稿会话。"""
+        session = await self.load_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        final_draft = session.get("current_draft", "") or session.get("draft_v1", "")
+
+        # PG 定稿
+        await self.pg.finalize_session(session_id, final_draft)
+
+        # Redis 清理
+        await self.redis.delete_session(session_id)
+
+        logger.info(f"[SessionManager] Session finalized: {session_id}")
+        return {
+            "session_id": session_id,
+            "final_draft": final_draft,
+            "status": "completed",
+        }
+
+    # ---- 心跳 ----
+
+    async def heartbeat(self, session_id: str) -> bool:
+        """更新心跳时间。"""
+        await self.redis.refresh_ttl(session_id)
+        return True
+
+    # ---- 断开保存 ----
+
+    async def save_on_disconnect(self, session_id: str) -> bool:
+        """WebSocket 断开时保存状态。"""
+        session = await self.redis.get_session(session_id)
+        if session:
+            messages = await self.redis.get_messages(session_id)
+            session["tuning_history"] = messages
+
+            # 更新 PG，标记为非活跃
+            await self.pg.update_session(
+                session_id,
+                {
+                    "stage": session.get("stage"),
+                    "current_draft": session.get("current_draft"),
+                    "is_active": False,
+                }
+            )
+            logger.info(f"[SessionManager] Session saved on disconnect: {session_id}")
+        return True
+
+    # ---- 历史列表 ----
+
+    async def get_history_sessions(
+        self,
+        limit: int = 20,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """获取历史会话列表。"""
+        return await self.pg.get_history_sessions(limit, offset)
+
+    async def get_session_messages(
+        self,
+        session_id: str
+    ) -> List[Dict[str, Any]]:
+        """获取会话完整消息历史。"""
+        return await self.pg.get_messages(session_id)
+
+    # ---- 大纲版本 ----
 
     async def increment_outline_version(self, session_id: str) -> int:
-        """增加大纲版本号，检查上限。"""
+        """增加大纲版本号。"""
         session = await self.load_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
 
-        if session["outline_version"] >= OUTLINE_MAX_REVISIONS:
-            raise OutlineRevisionLimitError(OUTLINE_MAX_REVISIONS)
-
-        new_version = session["outline_version"] + 1
+        new_version = session.get("outline_version", 0) + 1
         await self.update_session(session_id, outline_version=new_version)
         return new_version
 
-    async def finalize_session(self, session_id: str) -> DeepModeSession:
-        """定稿会话。"""
-        session = await self.load_session(session_id)
-        now = datetime.now().isoformat()
+    # ---- 阶段更新 ----
 
-        return await self.update_session(
-            session_id,
-            stage="completed",
-            final_draft=session["current_draft"] or session["draft_v1"],
-            finalized_at=now,
-        )
+    async def update_stage(self, session_id: str, stage: str) -> DeepModeSession:
+        """更新会话阶段。"""
+        return await self.update_session(session_id, stage=stage)
+
+    # ---- 列表查询 ----
+
+    async def list_sessions(
+        self,
+        article_id: str = None,
+        stage: str = None
+    ) -> List[DeepModeSession]:
+        """列出会话（从 PG 获取）。"""
+        # 这里简化实现，从 PG 获取历史会话
+        sessions = await self.pg.get_history_sessions(limit=100)
+        result = []
+        for s in sessions:
+            if article_id and s.get("article_id") != article_id:
+                continue
+            if stage and s.get("stage") != stage:
+                continue
+            result.append(s)
+        return result
+
+    # ---- 取消会话 ----
 
     async def cancel_session(self, session_id: str) -> DeepModeSession:
         """取消会话。"""
         return await self.update_session(session_id, stage="cancelled")
 
-    async def list_sessions(self, article_id: str = None, stage: str = None) -> List[DeepModeSession]:
-        """列出会话。"""
-        await self._ensure_db()
-
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-
-            if article_id and stage:
-                cursor = await db.execute(
-                    "SELECT * FROM deep_mode_sessions WHERE article_id = ? AND stage = ?",
-                    (article_id, stage)
-                )
-            elif article_id:
-                cursor = await db.execute(
-                    "SELECT * FROM deep_mode_sessions WHERE article_id = ?",
-                    (article_id,)
-                )
-            elif stage:
-                cursor = await db.execute(
-                    "SELECT * FROM deep_mode_sessions WHERE stage = ?",
-                    (stage,)
-                )
-            else:
-                cursor = await db.execute("SELECT * FROM deep_mode_sessions")
-
-            rows = await cursor.fetchall()
-
-            sessions = []
-            for row in rows:
-                sessions.append(DeepModeSession(
-                    session_id=row["session_id"],
-                    article_id=row["article_id"],
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                    stage=row["stage"],
-                    profile=json.loads(row["profile"]),
-                    outline=row["outline"],
-                    outline_version=row["outline_version"],
-                    draft_v1=row["draft_v1"],
-                    current_draft=row["current_draft"],
-                    tuning_history=json.loads(row["tuning_history"]),
-                    source_article=json.loads(row["source_article"]),
-                    rag_context=row["rag_context"],
-                    final_draft=row["final_draft"],
-                    finalized_at=row["finalized_at"],
-                ))
-
-            return sessions
+    # ---- 清理过期会话 ----
 
     async def cleanup_expired_sessions(self):
-        """清理过期会话。"""
-        await self._ensure_db()
-
-        cutoff = datetime.now().timestamp() - DEEP_MODE_SESSION_TTL
-        cutoff_dt = datetime.fromtimestamp(cutoff).isoformat()
-
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "DELETE FROM deep_mode_sessions WHERE created_at < ? AND stage NOT IN ('completed', 'cancelled')",
-                (cutoff_dt,)
-            )
-            deleted = db.total_changes
-            await db.commit()
-
-        if deleted > 0:
-            logger.info(f"[SessionManager] Cleaned up {deleted} expired sessions")
+        """清理过期会话（由 PG 定期任务处理）。"""
+        # PostgreSQL 持久化存储，不需要主动清理
+        # Redis 自动过期
+        logger.info("[SessionManager] Cleanup handled by Redis TTL and PG maintenance")
 
 
 # 全局实例
@@ -293,7 +279,7 @@ _session_manager: Optional[SessionManager] = None
 
 
 def get_session_manager() -> SessionManager:
-    """获取 Session Manager 单例。"""
+    """获取会话管理器实例。"""
     global _session_manager
     if _session_manager is None:
         _session_manager = SessionManager()

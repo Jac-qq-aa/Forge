@@ -1,86 +1,104 @@
-"""深度生成会话状态定义。"""
+"""会话状态数据结构定义。"""
 
-from typing import TypedDict, Literal, Optional, List
+from typing import TypedDict, List, Dict, Any, Optional, Literal
 from datetime import datetime
 import uuid
 
 
-# 阶段状态枚举
-SessionStage = Literal[
-    "waiting_input",         # 等待用户填写改写需求
-    "generating_outline",    # Agent 正在生成大纲
-    "waiting_outline",       # 等待用户确认大纲
-    "generating_content",    # Agent 正在生成全文
-    "tuning",                # 微调对话阶段
-    "completed",             # 已定稿
-    "cancelled",             # 用户取消
-]
+class SourceArticle(TypedDict):
+    """源文章结构。"""
+    title: str
+    text: str
+    url: Optional[str]
 
 
 class TuningMessage(TypedDict):
-    """微调对话消息"""
+    """微调对话消息。"""
     role: Literal["user", "agent"]
     content: str
+    is_question: bool
     timestamp: str
+    metadata: Optional[Dict[str, Any]]
 
 
-class DeepModeSession(TypedDict):
-    """深度生成会话状态"""
+class OutlineSection(TypedDict, total=False):
+    """大纲章节结构。"""
+    id: str
+    title: str
+    keywords: List[str]
+    word_count: int
+    subsections: List[Dict[str, Any]]
 
-    # 基础信息
+
+class Outline(TypedDict, total=False):
+    """结构化大纲。"""
+    sections: List[OutlineSection]
+    total_word_count: int
+    tone: str
+    target_audience: str
+
+
+class DeepModeSession(TypedDict, total=False):
+    """深度生成会话状态。"""
     session_id: str
-    article_id: str              # 关联的原始文章
-    created_at: str              # ISO datetime
-    updated_at: str              # ISO datetime
-
-    # 阶段状态
-    stage: SessionStage
-
-    # Plan-Execute Agent 输出
-    profile: dict                # 已废弃，保留空 dict 兼容数据库
-    outline: str                 # 大纲文本
-    outline_version: int         # 大纲版本号
-    draft_v1: str                # 初稿
-
-    # ReAct Agent 输出（增量更新）
-    current_draft: str           # 微调后的最新草稿
+    source_article: SourceArticle
+    user_input: str
+    stage: str
+    outline: Optional[Outline]
+    outline_version: int
+    rag_context: Optional[str]
+    current_draft: Optional[str]
     tuning_history: List[TuningMessage]
-
-    # 共享数据
-    source_article: dict         # 原文章 {title, text, url, ...}
-    rag_context: str             # RAG 知识库搜索结果
-
-    # 最终输出
-    final_draft: str
+    is_active: bool
+    last_heartbeat: Optional[str]
+    created_at: str
+    updated_at: Optional[str]
     finalized_at: Optional[str]
+    final_draft: Optional[str]
+    # 兼容旧字段
+    article_id: Optional[str]
+    draft_v1: Optional[str]
+    profile: Optional[Dict[str, Any]]
+
+
+# Stage 常量
+STAGE_PLANNING = "planning"
+STAGE_WAITING_INPUT = "waiting_input"
+STAGE_GENERATING_OUTLINE = "generating_outline"
+STAGE_WAITING_OUTLINE = "waiting_outline"
+STAGE_GENERATING_CONTENT = "generating_content"
+STAGE_EXECUTING = "executing"
+STAGE_TUNING = "tuning"
+STAGE_COMPLETED = "completed"
+STAGE_CANCELLED = "cancelled"
 
 
 def create_session_id() -> str:
     """生成唯一会话 ID。"""
-    return uuid.uuid4().hex[:12]
+    return str(uuid.uuid4())
 
 
 def create_initial_session(
-    article_id: str,
-    source_article: dict,
-    profile: Optional[dict] = None
+    source_article: Dict[str, str],
+    user_input: str = "",
+    session_id: str = None
 ) -> DeepModeSession:
     """创建初始会话状态。"""
     now = datetime.now().isoformat()
     return DeepModeSession(
-        session_id=create_session_id(),
-        article_id=article_id,
+        session_id=session_id or create_session_id(),
+        source_article=source_article,
+        user_input=user_input,
+        stage=STAGE_PLANNING,
+        outline=None,
+        outline_version=0,
+        rag_context=None,
+        current_draft=None,
+        tuning_history=[],
+        is_active=True,
+        last_heartbeat=now,
         created_at=now,
         updated_at=now,
-        stage="waiting_input",
-        profile={},  # 已废弃，保留空 dict
-        outline="",
-        outline_version=0,
-        draft_v1="",
-        current_draft="",
-        tuning_history=[],
-        source_article=source_article,
-        rag_context="",
-        final_draft="",
         finalized_at=None,
+        final_draft=None,
     )
