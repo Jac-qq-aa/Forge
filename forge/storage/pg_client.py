@@ -110,16 +110,20 @@ class PGSessionManager:
                         outline = $3,
                         outline_version = $4,
                         current_draft = $5,
-                        last_heartbeat = $6,
-                        is_active = $7,
+                        rag_context = $6,
+                        user_input = $7,
+                        last_heartbeat = $8,
+                        is_active = $9,
                         lock_version = lock_version + 1
-                    WHERE id = $1 AND lock_version = $8
+                    WHERE id = $1 AND lock_version = $10
                     """,
                     UUID(session_id),
                     data.get("stage"),
                     json.dumps(data.get("outline")) if data.get("outline") else None,
                     data.get("outline_version"),
                     data.get("current_draft"),
+                    data.get("rag_context"),
+                    data.get("user_input"),
                     datetime.now(),
                     data.get("is_active", True),
                     data.get("lock_version", 1),
@@ -132,8 +136,10 @@ class PGSessionManager:
                         outline = $3,
                         outline_version = $4,
                         current_draft = $5,
-                        last_heartbeat = $6,
-                        is_active = $7
+                        rag_context = $6,
+                        user_input = $7,
+                        last_heartbeat = $8,
+                        is_active = $9
                     WHERE id = $1
                     """,
                     UUID(session_id),
@@ -141,6 +147,8 @@ class PGSessionManager:
                     json.dumps(data.get("outline")) if data.get("outline") else None,
                     data.get("outline_version"),
                     data.get("current_draft"),
+                    data.get("rag_context"),
+                    data.get("user_input"),
                     datetime.now(),
                     data.get("is_active", True),
                 )

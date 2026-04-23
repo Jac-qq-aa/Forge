@@ -204,6 +204,7 @@ class SessionManager:
                     "outline_version": session.get("outline_version"),
                     "current_draft": session.get("current_draft"),
                     "rag_context": session.get("rag_context"),
+                    "user_input": session.get("user_input"),
                     "is_active": False,
                 }
             )
