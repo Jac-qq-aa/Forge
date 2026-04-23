@@ -188,16 +188,24 @@ class RedisSessionManager:
             "source_article", "outline", "metadata",
             "tuning_history", "rag_context"
         ]
+        datetime_fields = ["last_heartbeat", "created_at", "updated_at", "finalized_at"]
 
         for key, value in data.items():
-            if key in json_fields and value:
+            if not value:
+                continue
+            if key in json_fields:
                 try:
                     result[key] = json.loads(value)
                 except json.JSONDecodeError:
                     result[key] = value
-            elif key == "is_active" and value:
+            elif key in datetime_fields:
+                try:
+                    result[key] = datetime.fromisoformat(value)
+                except ValueError:
+                    result[key] = value
+            elif key == "is_active":
                 result[key] = value.lower() == "true"
-            elif key in ("outline_version", "lock_version") and value:
+            elif key in ("outline_version", "lock_version"):
                 result[key] = int(value)
             else:
                 result[key] = value

@@ -4,6 +4,7 @@
 
 import pytest
 import asyncio
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from forge.storage.redis_client import RedisSessionManager
@@ -94,3 +95,37 @@ class TestRedisSessionManager:
         messages = await redis_manager.get_messages("test-session-1")
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_update_session(self, redis_manager):
+        """测试更新会话。"""
+        mock_client = AsyncMock()
+        redis_manager._client = mock_client
+
+        await redis_manager.update_session(
+            "test-session-1",
+            {"stage": "tuning", "current_draft": "新草稿"}
+        )
+        mock_client.hset.assert_called_once()
+        mock_client.expire.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_session(self, redis_manager):
+        """测试删除会话。"""
+        mock_client = AsyncMock()
+        redis_manager._client = mock_client
+
+        await redis_manager.delete_session("test-session-1")
+        mock_client.delete.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_datetime_deserialization(self, redis_manager):
+        """测试 datetime 反序列化。"""
+        data = {
+            "last_heartbeat": "2024-01-15T10:30:00",
+            "created_at": "2024-01-15T09:00:00",
+        }
+        deserialized = redis_manager._deserialize_data(data)
+
+        assert isinstance(deserialized["last_heartbeat"], datetime)
+        assert isinstance(deserialized["created_at"], datetime)
