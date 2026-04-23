@@ -194,13 +194,20 @@ class SessionManager:
 
         final_draft = session.get("current_draft", "") or session.get("draft_v1", "")
 
-        # PG 定稿
-        await self.pg.finalize_session(session_id, final_draft)
+        # PG 定稿 - 必须成功
+        try:
+            await self.pg.finalize_session(session_id, final_draft)
+            logger.info(f"[SessionManager] Session finalized in PG: {session_id}")
+        except Exception as e:
+            logger.error(f"[SessionManager] PG finalize failed: {e}")
+            raise RuntimeError(f"Failed to finalize session: {e}")
 
-        # Redis 清理
-        await self.redis.delete_session(session_id)
+        # Redis 清理 - 失败可忽略
+        try:
+            await self.redis.delete_session(session_id)
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis cleanup failed (non-critical): {e}")
 
-        logger.info(f"[SessionManager] Session finalized: {session_id}")
         return {
             "session_id": session_id,
             "final_draft": final_draft,
@@ -211,32 +218,43 @@ class SessionManager:
 
     async def heartbeat(self, session_id: str) -> bool:
         """更新心跳时间。"""
-        await self.redis.refresh_ttl(session_id)
+        try:
+            await self.redis.refresh_ttl(session_id)
+        except Exception as e:
+            logger.warning(f"[SessionManager] Heartbeat failed (Redis unavailable): {e}")
         return True
 
     # ---- 断开保存 ----
 
     async def save_on_disconnect(self, session_id: str) -> bool:
         """WebSocket 断开时保存状态。"""
-        session = await self.redis.get_session(session_id)
-        if session:
-            messages = await self.redis.get_messages(session_id)
-            session["tuning_history"] = messages
+        try:
+            session = await self.redis.get_session(session_id)
+            if session:
+                try:
+                    messages = await self.redis.get_messages(session_id)
+                    session["tuning_history"] = messages
+                except Exception as e:
+                    logger.warning(f"[SessionManager] Redis message fetch failed: {e}")
 
-            # 保存完整状态到 PG
-            await self.pg.update_session(
-                session_id,
-                {
-                    "stage": session.get("stage"),
-                    "outline": session.get("outline"),
-                    "outline_version": session.get("outline_version"),
-                    "current_draft": session.get("current_draft"),
-                    "rag_context": session.get("rag_context"),
-                    "user_input": session.get("user_input"),
-                    "is_active": False,
-                }
-            )
-            logger.info(f"[SessionManager] Session saved on disconnect: {session_id}")
+                try:
+                    await self.pg.update_session(
+                        session_id,
+                        {
+                            "stage": session.get("stage"),
+                            "outline": session.get("outline"),
+                            "outline_version": session.get("outline_version"),
+                            "current_draft": session.get("current_draft"),
+                            "rag_context": session.get("rag_context"),
+                            "user_input": session.get("user_input"),
+                            "is_active": False,
+                        }
+                    )
+                    logger.info(f"[SessionManager] Session saved on disconnect: {session_id}")
+                except Exception as e:
+                    logger.error(f"[SessionManager] PG save on disconnect failed: {e}")
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis read failed during disconnect save: {e}")
         return True
 
     # ---- 历史列表 ----
@@ -266,11 +284,18 @@ class SessionManager:
 
         new_version = session.get("outline_version", 0) + 1
 
-        # 更新 Redis
-        await self.redis.update_session(session_id, {"outline_version": new_version})
+        # PG 优先持久化
+        try:
+            await self.pg.update_session(session_id, {"outline_version": new_version})
+        except Exception as e:
+            logger.error(f"[SessionManager] PG version update failed: {e}")
+            raise
 
-        # 强制写入 PG
-        await self.pg.update_session(session_id, {"outline_version": new_version})
+        # Redis 缓存更新
+        try:
+            await self.redis.update_session(session_id, {"outline_version": new_version})
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis version update failed: {e}")
 
         logger.info(f"[SessionManager] Outline version incremented: {session_id} -> {new_version}")
         return new_version
