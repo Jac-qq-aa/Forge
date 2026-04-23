@@ -318,20 +318,23 @@ class SessionManager:
 
     async def list_sessions(
         self,
-        article_id: str = None,
-        stage: str = None
+        article_id: Optional[str] = None,
+        stage: Optional[str] = None
     ) -> List[DeepModeSession]:
         """列出会话（从 PG 获取）。"""
-        # 这里简化实现，从 PG 获取历史会话
-        sessions = await self.pg.get_history_sessions(limit=100)
-        result = []
-        for s in sessions:
-            if article_id and s.get("article_id") != article_id:
-                continue
-            if stage and s.get("stage") != stage:
-                continue
-            result.append(s)
-        return result
+        try:
+            sessions = await self.pg.get_history_sessions(limit=100)
+            result = []
+            for s in sessions:
+                if article_id and s.get("article_id") != article_id:
+                    continue
+                if stage and s.get("stage") != stage:
+                    continue
+                result.append(s)
+            return result
+        except Exception as e:
+            logger.error(f"[SessionManager] PG history sessions query failed: {e}")
+            return []
 
     # ---- 取消会话 ----
 
