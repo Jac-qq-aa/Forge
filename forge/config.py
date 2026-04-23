@@ -28,10 +28,10 @@ HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "")
 XHS_BASE_URL = "https://www.xiaohongshu.com"
 ZHIHU_BASE_URL = "https://www.zhihu.com"
 
-# Output paths
-VIDEO_OUTPUT_DIR = "/tmp/forge_videos"
-IMAGE_OUTPUT_DIR = "/tmp/forge_images"
-COOKIES_FILE = "/tmp/forge_cookies/xhs_cookies.json"  # Persist login state
+# Output paths (持久化目录)
+VIDEO_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "videos")
+IMAGE_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "images")
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "cookies", "xhs_cookies.json")
 
 # Control parameters
 MAX_REVISIONS = 3
