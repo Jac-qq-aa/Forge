@@ -174,7 +174,7 @@ class RedisSessionManager:
             if value is None:
                 continue
             if isinstance(value, (dict, list)):
-                result[key] = json.dumps(value)
+                result[key] = json.dumps(value, ensure_ascii=False)
             elif isinstance(value, datetime):
                 result[key] = value.isoformat()
             else:
