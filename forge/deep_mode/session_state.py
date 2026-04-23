@@ -79,9 +79,9 @@ def create_session_id() -> str:
 
 
 def create_initial_session(
-    source_article: Dict[str, str],
+    source_article: SourceArticle,
     user_input: str = "",
-    session_id: str = None
+    session_id: Optional[str] = None
 ) -> DeepModeSession:
     """创建初始会话状态。"""
     now = datetime.now().isoformat()

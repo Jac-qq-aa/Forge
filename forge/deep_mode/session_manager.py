@@ -38,7 +38,7 @@ class SessionManager:
         source_article: Dict[str, str],
         user_input: str = "",
         session_id: str = None
-    ) -> DeepModeSession:
+    ) -> Dict[str, Any]:
         """创建新会话（双写）。"""
         if session_id is None:
             session_id = create_session_id()
@@ -49,9 +49,20 @@ class SessionManager:
             session_id=session_id,
         )
 
-        # 双写：Redis + PG
-        await self.redis.create_session(session_id, session_data)
-        await self.pg.create_session(session_id, session_data)
+        # PG 作为持久层必须成功
+        try:
+            await self.pg.create_session(session_id, session_data)
+            logger.info(f"[SessionManager] Session saved to PG: {session_id}")
+        except Exception as e:
+            logger.error(f"[SessionManager] PG create failed: {e}")
+            raise RuntimeError(f"Failed to create session: {e}")
+
+        # Redis 缓存层失败可降级
+        try:
+            await self.redis.create_session(session_id, session_data)
+            logger.info(f"[SessionManager] Session cached to Redis: {session_id}")
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis unavailable, PG-only mode: {e}")
 
         logger.info(f"[SessionManager] Session created: {session_id}")
         return session_data
@@ -61,30 +72,36 @@ class SessionManager:
     async def load_session(self, session_id: str) -> Optional[DeepModeSession]:
         """加载会话（优先 Redis，降级 PG）。"""
         # 优先从 Redis 获取
-        session = await self.redis.get_session(session_id)
-        if session:
-            # 补充消息历史
-            messages = await self.redis.get_messages(session_id)
-            session["tuning_history"] = messages
-            logger.info(f"[SessionManager] Session loaded from Redis: {session_id}")
-            return session
+        try:
+            session = await self.redis.get_session(session_id)
+            if session:
+                messages = await self.redis.get_messages(session_id)
+                session["tuning_history"] = messages
+                logger.info(f"[SessionManager] Session loaded from Redis: {session_id}")
+                return session
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis read failed, trying PG: {e}")
 
-        # Redis 无数据，尝试从 PG 恢复
-        session = await self.pg.get_session(session_id)
-        if session:
-            # 检查是否活跃
-            if session.get("is_active", True):
-                # 从 PG 获取消息历史
+        # Redis 无数据或失败，从 PG 恢复
+        try:
+            session = await self.pg.get_session(session_id)
+            if session and session.get("is_active"):
                 messages = await self.pg.get_messages(session_id)
                 session["tuning_history"] = messages
 
-                # 恢复到 Redis
-                await self.redis.create_session(session_id, session)
-                for msg in messages:
-                    await self.redis.append_message(session_id, msg)
+                # 尝试恢复到 Redis（失败不影响）
+                try:
+                    await self.redis.create_session(session_id, session)
+                    for msg in messages:
+                        await self.redis.append_message(session_id, msg)
+                    logger.info(f"[SessionManager] Session restored to Redis: {session_id}")
+                except Exception as e:
+                    logger.warning(f"[SessionManager] Redis restore failed: {e}")
 
-                logger.info(f"[SessionManager] Session restored from PG: {session_id}")
+                logger.info(f"[SessionManager] Session loaded from PG: {session_id}")
                 return session
+        except Exception as e:
+            logger.error(f"[SessionManager] PG read failed: {e}")
 
         logger.warning(f"[SessionManager] Session not found: {session_id}")
         return None
@@ -95,35 +112,39 @@ class SessionManager:
         self,
         session_id: str,
         **updates
-    ) -> DeepModeSession:
+    ) -> Dict[str, Any]:
         """更新会话（双写）。"""
-        # 获取当前状态
         session = await self.load_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
 
-        # 合并更新
         updated_data = {**session, **updates}
         updated_data["updated_at"] = datetime.now().isoformat()
 
-        # 更新 Redis
-        await self.redis.update_session(session_id, updates)
-
-        # 关键节点写入 PG
+        # 关键节点：PG 优先
         stage = updates.get("stage")
         if stage in (STAGE_WAITING_OUTLINE, STAGE_TUNING, STAGE_COMPLETED):
-            await self.pg.update_session(session_id, updated_data)
+            try:
+                await self.pg.update_session(session_id, updated_data)
+                logger.info(f"[SessionManager] Session synced to PG: {session_id}")
+            except Exception as e:
+                logger.error(f"[SessionManager] PG update failed: {e}")
+                raise
 
-        # 保存版本（如果草稿更新）
+        # Redis 缓存更新
+        try:
+            await self.redis.update_session(session_id, updates)
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis update failed: {e}")
+
+        # 保存版本
         if "current_draft" in updates and updates["current_draft"]:
-            # 使用消息数量作为版本参考（每个修改产生新版本）
             history = session.get("tuning_history", [])
             version = len(history) + 1
-            await self.pg.save_version(
-                session_id,
-                version=version,
-                draft=updates["current_draft"],
-            )
+            try:
+                await self.pg.save_version(session_id, version=version, draft=updates["current_draft"])
+            except Exception as e:
+                logger.warning(f"[SessionManager] Version save failed: {e}")
 
         logger.info(f"[SessionManager] Session updated: {session_id}")
         return updated_data
@@ -147,12 +168,19 @@ class SessionManager:
             "timestamp": datetime.now().isoformat(),
         }
 
-        # 双写
-        await self.redis.append_message(session_id, message)
-        await self.pg.append_message(session_id, message)
+        # PG 持久化必须成功
+        try:
+            await self.pg.append_message(session_id, message)
+        except Exception as e:
+            logger.error(f"[SessionManager] PG message append failed: {e}")
+            raise
 
-        # 刷新 TTL（心跳）
-        await self.redis.refresh_ttl(session_id)
+        # Redis 缓存失败可降级
+        try:
+            await self.redis.append_message(session_id, message)
+            await self.redis.refresh_ttl(session_id)
+        except Exception as e:
+            logger.warning(f"[SessionManager] Redis message append failed: {e}")
 
         return True
 
