@@ -116,7 +116,9 @@ class SessionManager:
 
         # 保存版本（如果草稿更新）
         if "current_draft" in updates and updates["current_draft"]:
-            version = session.get("outline_version", 0) + 1
+            # 使用消息数量作为版本参考（每个修改产生新版本）
+            history = session.get("tuning_history", [])
+            version = len(history) + 1
             await self.pg.save_version(
                 session_id,
                 version=version,
@@ -193,12 +195,15 @@ class SessionManager:
             messages = await self.redis.get_messages(session_id)
             session["tuning_history"] = messages
 
-            # 更新 PG，标记为非活跃
+            # 保存完整状态到 PG
             await self.pg.update_session(
                 session_id,
                 {
                     "stage": session.get("stage"),
+                    "outline": session.get("outline"),
+                    "outline_version": session.get("outline_version"),
                     "current_draft": session.get("current_draft"),
+                    "rag_context": session.get("rag_context"),
                     "is_active": False,
                 }
             )
@@ -231,7 +236,14 @@ class SessionManager:
             raise ValueError(f"Session not found: {session_id}")
 
         new_version = session.get("outline_version", 0) + 1
-        await self.update_session(session_id, outline_version=new_version)
+
+        # 更新 Redis
+        await self.redis.update_session(session_id, {"outline_version": new_version})
+
+        # 强制写入 PG
+        await self.pg.update_session(session_id, {"outline_version": new_version})
+
+        logger.info(f"[SessionManager] Outline version incremented: {session_id} -> {new_version}")
         return new_version
 
     # ---- 阶段更新 ----
