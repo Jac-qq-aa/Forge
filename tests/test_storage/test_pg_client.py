@@ -141,3 +141,91 @@ class TestPGSessionManager:
         assert result["id"] == "12345678-1234-5678-1234-567812345678"
         assert result["stage"] == "tuning"
         assert result["created_at"] == "2024-01-15T10:30:00"
+
+    @pytest.mark.asyncio
+    async def test_update_session(self, pg_manager):
+        """测试更新会话。"""
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_conn.execute.return_value = "UPDATE 1"
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        with patch('forge.storage.pg_client.get_pg_pool', return_value=mock_pool):
+            result = await pg_manager.update_session(
+                "test-session-1",
+                {
+                    "stage": "tuning",
+                    "current_draft": "新草稿内容",
+                }
+            )
+            assert result == True
+
+    @pytest.mark.asyncio
+    async def test_update_session_with_optimistic_lock(self, pg_manager):
+        """测试乐观锁更新。"""
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        # 乐观锁版本不匹配，更新失败
+        mock_conn.execute.return_value = "UPDATE 0"
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        with patch('forge.storage.pg_client.get_pg_pool', return_value=mock_pool):
+            result = await pg_manager.update_session(
+                "test-session-1",
+                {
+                    "stage": "tuning",
+                    "lock_version": 1,
+                },
+                increment_version=True
+            )
+            assert result == False  # 版本不匹配，更新失败
+
+    @pytest.mark.asyncio
+    async def test_get_messages(self, pg_manager):
+        """测试获取消息列表。"""
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_rows = [
+            {"id": "msg-1", "role": "user", "content": "修改第二段"},
+            {"id": "msg-2", "role": "agent", "content": "已修改"},
+        ]
+        mock_conn.fetch.return_value = mock_rows
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        with patch('forge.storage.pg_client.get_pg_pool', return_value=mock_pool):
+            result = await pg_manager.get_messages("test-session-1")
+            assert len(result) == 2
+            assert result[0]["role"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_get_versions(self, pg_manager):
+        """测试获取版本列表。"""
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_rows = [
+            {"version": 1, "draft": "第一版"},
+            {"version": 2, "draft": "第二版"},
+        ]
+        mock_conn.fetch.return_value = mock_rows
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        with patch('forge.storage.pg_client.get_pg_pool', return_value=mock_pool):
+            result = await pg_manager.get_versions("test-session-1")
+            assert len(result) == 2
+            assert result[0]["version"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_active_sessions(self, pg_manager):
+        """测试获取活跃会话列表。"""
+        mock_pool = AsyncMock()
+        mock_conn = AsyncMock()
+        mock_rows = [
+            {"id": "session-1", "stage": "tuning", "is_active": True},
+            {"id": "session-2", "stage": "planning", "is_active": True},
+        ]
+        mock_conn.fetch.return_value = mock_rows
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        with patch('forge.storage.pg_client.get_pg_pool', return_value=mock_pool):
+            result = await pg_manager.get_active_sessions()
+            assert len(result) == 2
