@@ -37,7 +37,7 @@ class SessionManager:
         self,
         source_article: Dict[str, str],
         user_input: str = "",
-        session_id: str = None
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """创建新会话（双写）。"""
         if session_id is None:
@@ -157,7 +157,7 @@ class SessionManager:
         role: str,
         content: str,
         is_question: bool = False,
-        metadata: Dict[str, Any] = None
+        metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """追加消息（双写）。"""
         message = {
@@ -265,14 +265,22 @@ class SessionManager:
         offset: int = 0
     ) -> List[Dict[str, Any]]:
         """获取历史会话列表。"""
-        return await self.pg.get_history_sessions(limit, offset)
+        try:
+            return await self.pg.get_history_sessions(limit, offset)
+        except Exception as e:
+            logger.error(f"[SessionManager] PG history query failed: {e}")
+            return []
 
     async def get_session_messages(
         self,
         session_id: str
     ) -> List[Dict[str, Any]]:
         """获取会话完整消息历史。"""
-        return await self.pg.get_messages(session_id)
+        try:
+            return await self.pg.get_messages(session_id)
+        except Exception as e:
+            logger.error(f"[SessionManager] PG messages query failed: {e}")
+            return []
 
     # ---- 大纲版本 ----
 

@@ -314,6 +314,14 @@ class PGSessionManager:
         for key in ["created_at", "updated_at", "finalized_at", "last_heartbeat"]:
             if key in result and result[key] is not None:
                 result[key] = result[key].isoformat()
+        # 处理 JSON 字段
+        json_fields = ["source_article", "outline", "metadata"]
+        for key in json_fields:
+            if key in result and isinstance(result[key], str):
+                try:
+                    result[key] = json.loads(result[key])
+                except json.JSONDecodeError:
+                    pass
         return result
 
 
