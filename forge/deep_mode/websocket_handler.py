@@ -5,7 +5,7 @@
 import logging
 import json
 from datetime import datetime
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from forge.deep_mode.session_manager import get_session_manager
 from forge.deep_mode.workflow import run_tuning_agent
@@ -122,6 +122,9 @@ async def handle_websocket_connection(websocket: WebSocket, session_id: str):
                     "updated_draft": updated_draft,
                 })
 
+                # 刷新心跳
+                await session_manager.heartbeat(session_id)
+
             elif message_type == "finalize":
                 # 定稿
                 session = await session_manager.finalize_session(session_id)
@@ -133,9 +136,18 @@ async def handle_websocket_connection(websocket: WebSocket, session_id: str):
                 })
                 break  # 结束连接
 
+            elif message_type == "heartbeat":
+                # 心跳检测 - 刷新 TTL
+                await session_manager.heartbeat(session_id)
+                await websocket.send_json({"type": "heartbeat_ack", "session_id": session_id})
+
             elif message_type == "ping":
-                # 心跳
+                # 兼容旧的心跳
                 await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        logger.info(f"[WebSocket] Connection disconnected: {session_id}")
+        await session_manager.save_on_disconnect(session_id)
 
     except Exception as e:
         logger.error(f"[WebSocket] Error: {e}")
