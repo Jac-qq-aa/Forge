@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Forge - 锐博集团内容转换平台</title>
-    <link rel="stylesheet" href="/static/style.css?v=10">
+    <link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
     <!-- Logo 在右上角 -->
@@ -2914,19 +2914,43 @@
             document.getElementById('session-detail-content').innerHTML = '<p class="loading-text">加载中...</p>';
 
             try {
+                // 获取会话详情（包含文章内容）
+                const restoreResponse = await fetch(`/api/deep_mode/session/${sessionId}/restore`, {
+                    method: 'POST'
+                });
+                const sessionData = await restoreResponse.json();
+
                 // 获取会话消息
-                const response = await fetch(`/api/deep_mode/session/${sessionId}/messages`);
-                const data = await response.json();
+                const messagesResponse = await fetch(`/api/deep_mode/session/${sessionId}/messages`);
+                const messagesData = await messagesResponse.json();
 
                 let html = '';
 
                 // 显示源文章
-                if (data.messages && data.messages.length > 0) {
+                if (sessionData.session && sessionData.session.source_article) {
+                    const article = sessionData.session.source_article;
                     html += '<div class="source-article">';
-                    html += '<h3>📝 对话记录</h3>';
+                    html += '<h3>📄 原文章</h3>';
+                    html += `<div class="article-title"><strong>标题：</strong>${escapeHtml(article.title || '无标题')}</div>`;
+                    html += `<div class="article-text" style="margin-top:10px;white-space:pre-wrap;"><strong>内容：</strong>${escapeHtml(article.text ? article.text.substring(0, 500) + (article.text.length > 500 ? '...' : '') : '无内容')}</div>`;
+                    html += '</div>';
+                }
+
+                // 显示当前草稿（如果有）
+                if (sessionData.session && sessionData.session.current_draft) {
+                    html += '<div class="source-article" style="margin-top:15px;background:#e8f5e9;">';
+                    html += '<h3>📝 当前草稿</h3>';
+                    html += `<div class="draft-content" style="white-space:pre-wrap;">${escapeHtml(sessionData.session.current_draft.substring(0, 1000))}${sessionData.session.current_draft.length > 1000 ? '...' : ''}</div>`;
+                    html += '</div>';
+                }
+
+                // 显示对话记录
+                if (messagesData.messages && messagesData.messages.length > 0) {
+                    html += '<div class="source-article" style="margin-top:15px;">';
+                    html += '<h3>💬 对话记录</h3>';
                     html += '<div class="session-messages">';
 
-                    data.messages.forEach(msg => {
+                    messagesData.messages.forEach(msg => {
                         const roleText = msg.role === 'user' ? '👤 用户' : '🤖 AI';
                         const time = new Date(msg.created_at).toLocaleString('zh-CN');
                         html += `
@@ -2938,8 +2962,8 @@
                     });
 
                     html += '</div></div>';
-                } else {
-                    html = '<p class="empty-text">暂无对话记录</p>';
+                } else if (!sessionData.session?.current_draft && !sessionData.session?.source_article) {
+                    html = '<p class="empty-text">暂无内容</p>';
                 }
 
                 document.getElementById('session-detail-content').innerHTML = html;
@@ -2962,19 +2986,73 @@
                 });
                 const data = await response.json();
 
-                if (data.restored) {
-                    showNotification('会话已恢复！', 'success');
+                if (data.restored && data.session) {
+                    showNotification('会话已恢复！正在加载...', 'success');
                     closeSessionDetailModal();
                     closeHistoryModal();
 
-                    // TODO: 实际恢复会话到界面
-                    // 这里可以调用 loadSessionToUI(data.session) 来恢复界面状态
+                    // 实际恢复会话到界面
+                    loadSessionToUI(data.session);
                 } else {
-                    showNotification('恢复失败: ' + (data.error || '未知错误'), 'error');
+                    showNotification('恢复失败: ' + (data.error || '会话不存在'), 'error');
                 }
             } catch (error) {
                 showNotification('恢复失败: ' + error.message, 'error');
             }
+        }
+
+        function loadSessionToUI(session) {
+            // 设置全局会话ID
+            deepSessionId = session.session_id;
+            deepSession = session;
+
+            // 隐藏其他section，显示深度生成相关界面
+            document.getElementById('articles-section').style.display = 'none';
+            document.getElementById('mode-selection-section').style.display = 'none';
+            document.getElementById('processing-section').style.display = 'none';
+            document.getElementById('result-section').style.display = 'none';
+
+            // 根据stage显示对应界面
+            if (session.stage === 'waiting_outline') {
+                // 显示大纲确认界面
+                document.getElementById('deep-outline-section').style.display = 'block';
+                document.getElementById('deep-outline-content').textContent = session.outline || '无大纲';
+                document.getElementById('deep-content-preview-section').style.display = 'none';
+                document.getElementById('deep-chat-section').style.display = 'none';
+            } else if (session.stage === 'tuning') {
+                // 显示微调对话界面
+                document.getElementById('deep-outline-section').style.display = 'none';
+                document.getElementById('deep-content-preview-section').style.display = 'block';
+                document.getElementById('deep-preview-content').textContent = session.current_draft || '无内容';
+                document.getElementById('deep-chat-section').style.display = 'block';
+
+                // 恢复对话历史
+                if (session.tuning_history && session.tuning_history.length > 0) {
+                    let historyHtml = '';
+                    session.tuning_history.forEach(msg => {
+                        historyHtml += `<div class="chat-message ${msg.role}">
+                            <span class="chat-role">${msg.role === 'user' ? '👤' : '🤖'}</span>
+                            <div class="chat-content">${escapeHtml(msg.content)}</div>
+                        </div>`;
+                    });
+                    document.getElementById('deep-chat-history').innerHTML = historyHtml;
+                }
+
+                // 建立WebSocket连接
+                connectDeepModeWebSocket(session.session_id);
+            } else if (session.stage === 'completed') {
+                // 显示最终结果
+                document.getElementById('deep-outline-section').style.display = 'none';
+                document.getElementById('deep-content-preview-section').style.display = 'block';
+                document.getElementById('deep-preview-content').textContent = session.final_draft || session.current_draft || '无内容';
+                document.getElementById('deep-chat-section').style.display = 'none';
+                showNotification('此会话已定稿，可以复制内容', 'info');
+            } else {
+                // 其他状态（planning, executing）
+                showNotification('会话状态: ' + session.stage + '，请重新操作', 'warning');
+            }
+
+            showSection('deep');
         }
     </script>
 </body>

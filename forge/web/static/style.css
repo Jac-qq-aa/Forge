@@ -1093,6 +1093,25 @@ body {
     margin-bottom: 15px;
 }
 
+.session-detail .source-article {
+    background: var(--bg-secondary);
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+}
+
+.session-detail .article-title {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.session-detail .article-text,
+.session-detail .draft-content {
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
 .session-messages {
     margin-top: 15px;
 }

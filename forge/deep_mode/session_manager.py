@@ -85,18 +85,19 @@ class SessionManager:
         # Redis 无数据或失败，从 PG 恢复
         try:
             session = await self.pg.get_session(session_id)
-            if session and session.get("is_active"):
+            if session:
                 messages = await self.pg.get_messages(session_id)
                 session["tuning_history"] = messages
 
-                # 尝试恢复到 Redis（失败不影响）
-                try:
-                    await self.redis.create_session(session_id, session)
-                    for msg in messages:
-                        await self.redis.append_message(session_id, msg)
-                    logger.info(f"[SessionManager] Session restored to Redis: {session_id}")
-                except Exception as e:
-                    logger.warning(f"[SessionManager] Redis restore failed: {e}")
+                # 只有活跃会话才恢复到 Redis 缓存
+                if session.get("is_active"):
+                    try:
+                        await self.redis.create_session(session_id, session)
+                        for msg in messages:
+                            await self.redis.append_message(session_id, msg)
+                        logger.info(f"[SessionManager] Session restored to Redis: {session_id}")
+                    except Exception as e:
+                        logger.warning(f"[SessionManager] Redis restore failed: {e}")
 
                 logger.info(f"[SessionManager] Session loaded from PG: {session_id}")
                 return session
