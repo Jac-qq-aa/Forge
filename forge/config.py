@@ -52,3 +52,25 @@ AGENT_EXECUTION_TIMEOUT = int(os.getenv("AGENT_EXECUTION_TIMEOUT", "60"))  # Age
 
 # 目标平台选项
 TARGET_PLATFORM_OPTIONS = ["zhihu_article", "xhs_video", "wechat_article"]
+
+# ============================================================================
+# Redis Configuration
+# ============================================================================
+
+REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
+REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+
+# Session TTL (30 minutes)
+SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
+
+# ============================================================================
+# PostgreSQL Configuration
+# ============================================================================
+
+PG_HOST: str = os.getenv("PG_HOST", "localhost")
+PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
+PG_USER: str = os.getenv("PG_USER", "forge")
+PG_PASSWORD: str = os.getenv("PG_PASSWORD", "")
+PG_DATABASE: str = os.getenv("PG_DATABASE", "forge")
