@@ -3499,7 +3499,7 @@
             }
 
             // 使用API下载
-            const downloadUrl = `/api/download_file?file=${encodeURIComponent(videoPath)}`;
+            const downloadUrl = `/api/download_file?path=${encodeURIComponent(videoPath)}`;
             const a = document.createElement('a');
             a.href = downloadUrl;
             a.download = `digital_human_${currentHistorySessionId || 'video'}.mp4`;
