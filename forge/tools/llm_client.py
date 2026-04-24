@@ -1,12 +1,27 @@
-"""Async and Sync LLM client for Qwen API via OpenAI-compatible interface."""
+"""Async and Sync LLM client using LangChain ChatOpenAI for LangSmith tracing."""
 
 import asyncio
 import logging
-from openai import AsyncOpenAI, OpenAI, APIError, APIConnectionError, RateLimitError
+from typing import Optional
 
-from forge.config import QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL, LLM_TIMEOUT
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from forge.config import (
+    QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL, LLM_TIMEOUT,
+    LANGCHAIN_API_KEY, LANGCHAIN_TRACING_V2, LANGCHAIN_PROJECT
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Ensure LangSmith tracing is enabled
+if LANGCHAIN_API_KEY:
+    import os
+    os.environ["LANGCHAIN_API_KEY"] = LANGCHAIN_API_KEY
+    os.environ["LANGCHAIN_TRACING_V2"] = LANGCHAIN_TRACING_V2
+    os.environ["LANGCHAIN_PROJECT"] = LANGCHAIN_PROJECT
+    logger.info(f"[LLM] LangSmith tracing enabled: {LANGCHAIN_PROJECT}")
 
 
 class LLMClientError(Exception):
@@ -15,16 +30,22 @@ class LLMClientError(Exception):
 
 
 class LLMClient:
-    """Async client for Qwen LLM with retry logic."""
+    """Async client for Qwen LLM using LangChain ChatOpenAI.
 
-    def __init__(self):
+    Using ChatOpenAI enables automatic LangSmith tracing for all calls.
+    """
+
+    def __init__(self, model: str = None):
         if not QWEN_API_KEY:
             raise ValueError("QWEN_API_KEY not set in environment")
-        self.client = AsyncOpenAI(
+
+        self.llm = ChatOpenAI(
             base_url=QWEN_API_URL,
             api_key=QWEN_API_KEY,
+            model=model or QWEN_MODEL,
             timeout=LLM_TIMEOUT,
         )
+        logger.info(f"[LLM] ChatOpenAI initialized with model: {model or QWEN_MODEL}")
 
     async def chat(self, prompt: str, system_prompt: str = None) -> str:
         """Send a chat request to Qwen.
@@ -38,20 +59,21 @@ class LLMClient:
         """
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+            messages.append(SystemMessage(content=system_prompt))
+        messages.append(HumanMessage(content=prompt))
 
         logger.info(f"[LLM] Sending request with {len(messages)} messages")
 
-        response = await self.client.chat.completions.create(
-            model=QWEN_MODEL,
-            messages=messages,
-        )
-        if not response.choices or response.choices[0].message.content is None:
-            raise LLMClientError("Empty response from LLM")
-        content = response.choices[0].message.content
-        logger.info(f"[LLM] Response received: {len(content)} chars")
-        return content
+        try:
+            response = await self.llm.ainvoke(messages)
+            content = response.content
+            if not content:
+                raise LLMClientError("Empty response from LLM")
+            logger.info(f"[LLM] Response received: {len(content)} chars")
+            return content
+        except Exception as e:
+            logger.error(f"[LLM] Chat failed: {e}")
+            raise LLMClientError(f"LLM调用失败: {e}") from e
 
     async def chat_with_retry(self, prompt: str, system_prompt: str = None, max_retries: int = 3) -> str:
         """Send chat request with exponential backoff retry.
@@ -70,44 +92,51 @@ class LLMClient:
         for attempt in range(max_retries):
             try:
                 return await self.chat(prompt, system_prompt)
-            except (APIError, APIConnectionError, RateLimitError) as e:
+            except LLMClientError as e:
                 logger.warning(f"[LLM] Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     logger.error(f"[LLM] All retries exhausted")
-                    raise LLMClientError(f"LLM调用失败: {e}") from e
+                    raise
                 await asyncio.sleep(2 ** attempt)
 
 
 class SyncLLMClient:
-    """Sync client for Qwen LLM - used in @tool decorated functions."""
+    """Sync client for Qwen LLM - used in @tool decorated functions.
 
-    def __init__(self):
+    Using ChatOpenAI enables automatic LangSmith tracing.
+    """
+
+    def __init__(self, model: str = None):
         if not QWEN_API_KEY:
             raise ValueError("QWEN_API_KEY not set in environment")
-        self.client = OpenAI(
+
+        self.llm = ChatOpenAI(
             base_url=QWEN_API_URL,
             api_key=QWEN_API_KEY,
+            model=model or QWEN_MODEL,
             timeout=LLM_TIMEOUT,
         )
+        logger.info(f"[LLM-Sync] ChatOpenAI initialized with model: {model or QWEN_MODEL}")
 
     def chat(self, prompt: str, system_prompt: str = None) -> str:
         """Send a synchronous chat request to Qwen."""
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+            messages.append(SystemMessage(content=system_prompt))
+        messages.append(HumanMessage(content=prompt))
 
         logger.info(f"[LLM-Sync] Sending request with {len(messages)} messages")
 
-        response = self.client.chat.completions.create(
-            model=QWEN_MODEL,
-            messages=messages,
-        )
-        if not response.choices or response.choices[0].message.content is None:
-            raise LLMClientError("Empty response from LLM")
-        content = response.choices[0].message.content
-        logger.info(f"[LLM-Sync] Response received: {len(content)} chars")
-        return content
+        try:
+            response = self.llm.invoke(messages)
+            content = response.content
+            if not content:
+                raise LLMClientError("Empty response from LLM")
+            logger.info(f"[LLM-Sync] Response received: {len(content)} chars")
+            return content
+        except Exception as e:
+            logger.error(f"[LLM-Sync] Chat failed: {e}")
+            raise LLMClientError(f"LLM调用失败: {e}") from e
 
     def chat_with_retry(self, prompt: str, system_prompt: str = None, max_retries: int = 3) -> str:
         """Send chat request with exponential backoff retry (sync version)."""
@@ -115,11 +144,11 @@ class SyncLLMClient:
         for attempt in range(max_retries):
             try:
                 return self.chat(prompt, system_prompt)
-            except (APIError, APIConnectionError, RateLimitError) as e:
+            except LLMClientError as e:
                 logger.warning(f"[LLM-Sync] Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
                     logger.error(f"[LLM-Sync] All retries exhausted")
-                    raise LLMClientError(f"LLM调用失败: {e}") from e
+                    raise
                 time.sleep(2 ** attempt)
 
 
