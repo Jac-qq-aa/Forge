@@ -1711,28 +1711,53 @@
             // 显示预览
             const reader = new FileReader();
             reader.onload = function(e) {
-                const preview = document.getElementById('deep-custom-avatar-preview');
-                preview.innerHTML = `<img src="${e.target.result}" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">`;
-                preview.style.background = '';
+                // 检查图片分辨率
+                const img = new Image();
+                img.onload = function() {
+                    const width = img.width;
+                    const height = img.height;
 
-                // 保存自定义头像数据
-                deepSelectedAvatar = 'custom';
-                deepCustomAvatarData = e.target.result;
+                    // 阿里云万相数字人要求：宽度和高度在 [400, 7000] 范围内
+                    if (width < 400 || height < 400 || width > 7000 || height > 7000) {
+                        showNotification(`图片分辨率不符合要求（当前${width}×${height}），需要宽高都在400-7000像素范围内`, 'error');
+                        // 重置预览
+                        const preview = document.getElementById('deep-custom-avatar-preview');
+                        preview.innerHTML = '📁 上传';
+                        preview.style.background = '#f5f5f5';
+                        // 取消选中
+                        const customOption = document.getElementById('deep-custom-avatar-option');
+                        customOption.style.border = '2px solid #ddd';
+                        customOption.style.background = '';
+                        deepSelectedAvatar = 'default1';
+                        deepCustomAvatarData = null;
+                        return;
+                    }
 
-                // 选中自定义头像
-                const customOption = document.getElementById('deep-custom-avatar-option');
-                customOption.style.border = '2px solid #4CAF50';
-                customOption.style.background = '#e8f5e9';
+                    // 分辨率符合要求，显示预览
+                    const preview = document.getElementById('deep-custom-avatar-preview');
+                    preview.innerHTML = `<img src="${e.target.result}" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">`;
+                    preview.style.background = '';
 
-                // 取消其他选项的选中状态
-                const options = document.querySelectorAll('.deep-avatar-option');
-                options.forEach(opt => {
-                    opt.style.border = '2px solid #ddd';
-                    opt.style.background = '';
-                });
+                    // 保存自定义头像数据
+                    deepSelectedAvatar = 'custom';
+                    deepCustomAvatarData = e.target.result;
 
-                document.getElementById('deep-selected-avatar-info').textContent = '当前选择：自定义形象';
-                showNotification('自定义头像已上传', 'success');
+                    // 选中自定义头像
+                    const customOption = document.getElementById('deep-custom-avatar-option');
+                    customOption.style.border = '2px solid #4CAF50';
+                    customOption.style.background = '#e8f5e9';
+
+                    // 取消其他选项的选中状态
+                    const options = document.querySelectorAll('.deep-avatar-option');
+                    options.forEach(opt => {
+                        opt.style.border = '2px solid #ddd';
+                        opt.style.background = '';
+                    });
+
+                    document.getElementById('deep-selected-avatar-info').textContent = '当前选择：自定义形象 (' + width + '×' + height + ')';
+                    showNotification('自定义头像已上传，分辨率符合要求', 'success');
+                };
+                img.src = e.target.result;
             };
             reader.readAsDataURL(file);
         }
@@ -2809,45 +2834,68 @@
             // 显示预览
             const reader = new FileReader();
             reader.onload = async function(e) {
-                // 显示预览图片
-                const preview = document.getElementById('custom-avatar-preview');
-                preview.innerHTML = `<img src="${e.target.result}" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">`;
-                preview.style.background = '';
+                // 检查图片分辨率
+                const img = new Image();
+                img.onload = async function() {
+                    const width = img.width;
+                    const height = img.height;
 
-                // 选中自定义头像样式
-                const customOption = document.getElementById('custom-avatar-option');
-                customOption.style.border = '2px solid #4CAF50';
-                customOption.style.background = '#e8f5e9';
+                    // 阿里云万相数字人要求：宽度和高度在 [400, 7000] 范围内
+                    if (width < 400 || height < 400 || width > 7000 || height > 7000) {
+                        showNotification(`图片分辨率不符合要求（当前${width}×${height}），需要宽高都在400-7000像素范围内`, 'error');
+                        // 重置预览
+                        const preview = document.getElementById('custom-avatar-preview');
+                        preview.innerHTML = '📁 上传';
+                        preview.style.background = '#f5f5f5';
+                        // 取消选中
+                        const customOption = document.getElementById('custom-avatar-option');
+                        customOption.style.border = '2px solid #ddd';
+                        customOption.style.background = '';
+                        document.getElementById('selected-avatar-info').textContent = '当前选择：默认形象 1';
+                        return;
+                    }
 
-                // 取消其他选项的选中状态
-                document.querySelectorAll('.avatar-option').forEach(el => {
-                    el.style.border = '2px solid #ddd';
-                    el.style.background = '';
-                });
+                    // 分辨率符合要求，显示预览图片
+                    const preview = document.getElementById('custom-avatar-preview');
+                    preview.innerHTML = `<img src="${e.target.result}" style="width: 80px; height: 100px; object-fit: cover; border-radius: 4px;">`;
+                    preview.style.background = '';
 
-                document.getElementById('selected-avatar-info').textContent = '当前选择：自定义形象';
+                    // 选中自定义头像样式
+                    const customOption = document.getElementById('custom-avatar-option');
+                    customOption.style.border = '2px solid #4CAF50';
+                    customOption.style.background = '#e8f5e9';
 
-                // 上传到 OSS 获取 URL
-                try {
-                    const formData = new FormData();
-                    formData.append('file', file);
-
-                    const response = await fetch('/api/upload_image', {
-                        method: 'POST',
-                        body: formData,
+                    // 取消其他选项的选中状态
+                    document.querySelectorAll('.avatar-option').forEach(el => {
+                        el.style.border = '2px solid #ddd';
+                        el.style.background = '';
                     });
 
-                    const data = await response.json();
+                    document.getElementById('selected-avatar-info').textContent = '当前选择：自定义形象 (' + width + '×' + height + ')';
 
-                    if (data.success && data.url) {
-                        selectedAvatarUrl = data.url;
-                        showNotification('图片上传成功！', 'success');
-                    } else {
-                        showNotification('上传失败：' + (data.error || '未知错误'), 'error');
+                    // 上传到 OSS 获取 URL
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', file);
+
+                        const response = await fetch('/api/upload_image', {
+                            method: 'POST',
+                            body: formData,
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success && data.url) {
+                            selectedAvatarUrl = data.url;
+                            showNotification('图片上传成功！分辨率符合要求', 'success');
+                        } else {
+                            showNotification('上传失败：' + (data.error || '未知错误'), 'error');
+                        }
+                    } catch (error) {
+                        showNotification('上传失败：' + error.message, 'error');
                     }
-                } catch (error) {
-                    showNotification('上传失败：' + error.message, 'error');
-                }
+                };
+                img.src = e.target.result;
             };
             reader.readAsDataURL(file);
             event.target.value = '';  // 清空 input，允许重新选择相同文件
