@@ -42,8 +42,8 @@ class DigitalHumanGenerator:
     # DashScope API 地址
     BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 
-    # 每段最大字数（确保音频 < 20秒）
-    MAX_SEGMENT_LENGTH = 50
+    # 每段最大字数（确保音频 < 20秒，TTS 约 3-4 字/秒，保守取 60 字）
+    MAX_SEGMENT_LENGTH = 60
 
     def __init__(self, api_key: str = None, avatar_url: str = None, voice: str = None):
         self.api_key = api_key or QWEN_API_KEY
@@ -226,8 +226,13 @@ class DigitalHumanGenerator:
             logger.info(f"[DigitalHuman] TTS 生成音频: {segment[:30]}...")
             tts = TtsGenerator(voice=self.voice)
             audio_path = f"{self.task_dir}/audio/segment_{i}.mp3"
-            await tts.generate(segment, audio_path)
-            segment_audios.append(audio_path)
+
+            try:
+                await tts.generate(segment, audio_path)
+                segment_audios.append(audio_path)
+            except Exception as e:
+                logger.error(f"[DigitalHuman] 第 {i+1} 段 TTS 失败: {e}")
+                continue  # 跳过该段，继续下一段
 
             # 检查音频时长
             duration = self._get_audio_duration(audio_path)
@@ -237,15 +242,13 @@ class DigitalHumanGenerator:
                 logger.warning(f"[DigitalHuman] 第 {i+1} 段音频超过20s")
                 continue  # 跳过该段
 
-            # Step 2: 上传到 OSS
-            audio_url = await self._upload_audio(audio_path)
-
-            # Step 3: 创建视频任务
-            api_task_id = await self._create_video_task(audio_url)
-            logger.info(f"[DigitalHuman] API 任务 ID: {api_task_id}")
-
-            # Step 4: 等待完成并下载
+            # Step 2: 上传到 OSS + Step 3: 创建视频任务 + Step 4: 等待完成并下载
             try:
+                audio_url = await self._upload_audio(audio_path)
+
+                api_task_id = await self._create_video_task(audio_url)
+                logger.info(f"[DigitalHuman] API 任务 ID: {api_task_id}")
+
                 video_url = await self._wait_for_task(api_task_id)
                 segment_path = f"{self.task_dir}/segments/segment_{i}.mp4"
                 await self._download_video(video_url, segment_path)
