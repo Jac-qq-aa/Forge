@@ -28,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger("ForgeWeb")
 
 from forge.storage.redis_client import close_redis_pool
-from forge.storage.pg_client import close_pg_pool, get_pg_pool
+from forge.storage.pg_client import close_pg_pool, get_pg_pool, is_valid_uuid
 
 
 @asynccontextmanager
@@ -1312,6 +1312,8 @@ def generate_evaluation_tip(result: dict) -> str:
 @app.get("/api/evaluation/{session_id}")
 async def api_get_evaluation(session_id: str):
     """获取评估结果（用户端简单分数）。"""
+    if not is_valid_uuid(session_id):
+        raise HTTPException(status_code=400, detail="无效的session_id格式")
     result = await get_evaluation_result(session_id)
     if result is None:
         return {"status": "pending"}
@@ -1327,14 +1329,19 @@ async def api_get_evaluation(session_id: str):
 @app.get("/api/admin/evaluation/{session_id}/detail")
 async def api_get_evaluation_detail(session_id: str):
     """获取详细评估结果（后台分析）。"""
+    if not is_valid_uuid(session_id):
+        raise HTTPException(status_code=400, detail="无效的session_id格式")
     result = await get_evaluation_result(session_id)
     logs = await get_session_probe_logs(session_id)
-    return {"evaluation": result, "probe_logs": logs}
+    if result is None:
+        return {"status": "not_found", "evaluation": None, "probe_logs": logs}
+    return {"status": "completed", "evaluation": result, "probe_logs": logs}
 
 
 @app.get("/api/admin/evaluation/stats")
 async def api_get_evaluation_stats(limit: int = 100):
     """获取评估统计数据。"""
+    limit = min(max(limit, 1), 1000)  # 范围限制1-1000
     stats = await get_evaluation_stats(limit)
 
     # 计算分布
