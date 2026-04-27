@@ -209,10 +209,20 @@ class EvaluationEngine:
         Returns:
             评估结果字典
         """
-        prompt = f"""请评估以下内容改写的质量。评估维度：1) 忠实度（Faithfulness）：改写内容是否忠实于原始素材，没有添加虚假信息或遗漏关键信息
-2) 相关性（Relevance）：改写内容是否保持与原始主题的相关性原始素材（前1000字）：
-{original_text[:1000]}改写内容（前2000字）：
-{draft_text[:2000]}请按1-10分进行评分，并以以下格式返回：Faithfulness评分: [分数]
+        prompt = f"""请评估以下内容改写的质量。
+
+评估维度：
+1) 忠实度（Faithfulness）：改写内容是否忠实于原始素材，没有添加虚假信息或遗漏关键信息
+2) 相关性（Relevance）：改写内容是否保持与原始主题的相关性
+
+原始素材（前1000字）：
+{original_text[:1000]}
+
+改写内容（前2000字）：
+{draft_text[:2000]}
+
+请按1-10分进行评分，并以以下格式返回：
+Faithfulness评分: [分数]
 Relevance评分: [分数]
 
 简要说明评分理由。"""
@@ -312,6 +322,9 @@ Relevance评分: [分数]
             if match:
                 try:
                     score = float(match.group(1))
+                    # 检查并警告超出范围的分数
+                    if score < 1.0 or score > 10.0:
+                        logger.warning(f"[Engine] parse_score got unusual value {score} for '{label}', clamping to [1,10]")
                     # 限制在1-10范围内
                     return min(max(score, 1.0), 10.0)
                 except (ValueError, IndexError):

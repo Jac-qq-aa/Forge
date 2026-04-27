@@ -61,6 +61,8 @@ def calculate_node_effectiveness(probe_logs: List[Dict[str, Any]]) -> Dict[str, 
         duration_seconds = duration_ms / 1000.0 if duration_ms > 0 else 0.0
 
         # 计算单次有效性
+        # 注意：AI分数下降是正向结果（越不像AI越好）
+        # 对于humanizer节点，effectiveness为负值表示AI特征降低（好现象）
         if duration_seconds > 0:
             effectiveness = (output_score - input_score) / duration_seconds
         else:
