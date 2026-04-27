@@ -17,17 +17,23 @@ logger = logging.getLogger(__name__)
 _redis_client: Optional[redis.Redis] = None
 
 
-def _get_redis_client() -> redis.Redis:
-    """获取Redis客户端（延迟初始化）。"""
+def _get_redis_client() -> Optional[redis.Redis]:
+    """获取Redis客户端（延迟初始化），失败返回None。"""
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=EVAL_REDIS_DB,
-            decode_responses=False,  # 保持bytes，json.dumps后直接存
-        )
-        logger.info(f"[Probe] Redis client initialized: db={EVAL_REDIS_DB}")
+        try:
+            _redis_client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                db=EVAL_REDIS_DB,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+                decode_responses=False,  # 保持bytes，json.dumps后直接存
+            )
+            logger.info(f"[Probe] Redis client initialized: db={EVAL_REDIS_DB}")
+        except redis.ConnectionError as e:
+            logger.warning(f"[Probe] Redis connection failed: {e}, will retry on next call")
+            return None
     return _redis_client
 
 
@@ -77,6 +83,9 @@ def probe_node(
     # Push到Redis队列
     try:
         client = _get_redis_client()
+        if client is None:
+            logger.warning("[Probe] Redis client not available, data discarded")
+            return
         client.lpush(EVAL_QUEUE_NAME, json.dumps(payload, ensure_ascii=False))
         logger.debug(f"[Probe] {node_name} pushed to queue: session={session_id}")
     except Exception as e:
