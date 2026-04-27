@@ -7,11 +7,7 @@
 - Storage: PostgreSQL 存储层
 """
 
-from .probe import probe_node, extract_key_metrics
-from .probe_decorator import with_probe
-from .storage import EvaluationStorage, get_evaluation_storage
-from .engine import EvaluationEngine
-
+# 延迟导入，避免循环依赖
 __all__ = [
     "probe_node",
     "extract_key_metrics",
@@ -20,3 +16,24 @@ __all__ = [
     "get_evaluation_storage",
     "EvaluationEngine",
 ]
+
+
+def __getattr__(name: str):
+    """延迟导入模块成员。"""
+    if name == "probe_node" or name == "extract_key_metrics":
+        from .probe import probe_node, extract_key_metrics
+
+        return probe_node if name == "probe_node" else extract_key_metrics
+    elif name == "with_probe":
+        from .probe_decorator import with_probe
+
+        return with_probe
+    elif name == "EvaluationStorage" or name == "get_evaluation_storage":
+        from .storage import EvaluationStorage, get_evaluation_storage
+
+        return EvaluationStorage if name == "EvaluationStorage" else get_evaluation_storage
+    elif name == "EvaluationEngine":
+        from .engine import EvaluationEngine
+
+        return EvaluationEngine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
