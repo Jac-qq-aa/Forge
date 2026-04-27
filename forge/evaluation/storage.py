@@ -53,34 +53,37 @@ class EvaluationStorage:
 
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            # 获取当前session的node_sequence
-            existing_logs = await conn.fetch(
-                "SELECT node_sequence FROM probe_logs WHERE session_id = $1",
-                UUID(session_id),
-            )
-            node_sequence = len(existing_logs) + 1
+            try:
+                # 使用数据库原子操作计算node_sequence，避免竞态条件
+                await conn.execute(
+                    """
+                    INSERT INTO probe_logs (
+                        session_id, node_name, node_sequence, timestamp,
+                        input_metrics, output_metrics, duration_ms,
+                        loop_type, loop_iteration, metadata
+                    ) VALUES (
+                        $1, $2,
+                        COALESCE((
+                            SELECT MAX(node_sequence) FROM probe_logs WHERE session_id = $1
+                        ), 0) + 1,
+                        $3, $4, $5, $6, $7, $8, $9
+                    )
+                    """,
+                    UUID(session_id),
+                    payload["node_name"],
+                    datetime.fromtimestamp(payload["timestamp"]),
+                    payload.get("input_metrics") or {},
+                    payload.get("output_metrics") or {},
+                    payload.get("duration_ms"),
+                    payload.get("loop_type"),
+                    payload.get("loop_iteration", 0),
+                    payload.get("metadata") or {},
+                )
+            except asyncpg.PostgresError as e:
+                logger.error(f"[EvalStorage] save_probe_log failed: {e}")
+                return
 
-            await conn.execute(
-                """
-                INSERT INTO probe_logs (
-                    session_id, node_name, node_sequence, timestamp,
-                    input_metrics, output_metrics, duration_ms,
-                    loop_type, loop_iteration, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                """,
-                UUID(session_id),
-                payload["node_name"],
-                node_sequence,
-                datetime.fromtimestamp(payload["timestamp"]),
-                payload.get("input_metrics") or {},
-                payload.get("output_metrics") or {},
-                payload.get("duration_ms"),
-                payload.get("loop_type"),
-                payload.get("loop_iteration", 0),
-                payload.get("metadata") or {},
-            )
-
-        logger.debug(f"[EvalStorage] Probe log saved: {payload['node_name']} seq={node_sequence}")
+        logger.debug(f"[EvalStorage] Probe log saved: {payload['node_name']}")
 
     async def get_session_probe_logs(self, session_id: str) -> List[Dict[str, Any]]:
         """获取session的所有probe logs。
@@ -97,17 +100,21 @@ class EvaluationStorage:
 
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, session_id, node_name, node_sequence, timestamp,
-                       input_metrics, output_metrics, duration_ms,
-                       loop_type, loop_iteration, metadata
-                FROM probe_logs
-                WHERE session_id = $1
-                ORDER BY node_sequence ASC
-                """,
-                UUID(session_id),
-            )
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, session_id, node_name, node_sequence, timestamp,
+                           input_metrics, output_metrics, duration_ms,
+                           loop_type, loop_iteration, metadata
+                    FROM probe_logs
+                    WHERE session_id = $1
+                    ORDER BY node_sequence ASC
+                    """,
+                    UUID(session_id),
+                )
+            except asyncpg.PostgresError as e:
+                logger.error(f"[EvalStorage] get_session_probe_logs failed: {e}")
+                return []
 
         return [self._row_to_dict(row) for row in rows]
 
@@ -136,35 +143,39 @@ class EvaluationStorage:
 
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO evaluation_results (
-                    session_id, overall_score, faithfulness_score,
-                    relevance_score, human_score, metrics_detail,
-                    node_effectiveness, loop_roi, evaluated_at, status
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (session_id) DO UPDATE SET
-                    overall_score = $2,
-                    faithfulness_score = $3,
-                    relevance_score = $4,
-                    human_score = $5,
-                    metrics_detail = $6,
-                    node_effectiveness = $7,
-                    loop_roi = $8,
-                    evaluated_at = $9,
-                    status = $10
-                """,
-                UUID(session_id),
-                result.get("overall_score"),
-                result.get("faithfulness_score"),
-                result.get("relevance_score"),
-                result.get("human_score"),
-                result.get("metrics_detail") or {},
-                result.get("node_effectiveness") or {},
-                result.get("loop_roi") or {},
-                datetime.now(),
-                result.get("status", "completed"),
-            )
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO evaluation_results (
+                        session_id, overall_score, faithfulness_score,
+                        relevance_score, human_score, metrics_detail,
+                        node_effectiveness, loop_roi, evaluated_at, status
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        overall_score = $2,
+                        faithfulness_score = $3,
+                        relevance_score = $4,
+                        human_score = $5,
+                        metrics_detail = $6,
+                        node_effectiveness = $7,
+                        loop_roi = $8,
+                        evaluated_at = $9,
+                        status = $10
+                    """,
+                    UUID(session_id),
+                    result.get("overall_score"),
+                    result.get("faithfulness_score"),
+                    result.get("relevance_score"),
+                    result.get("human_score"),
+                    result.get("metrics_detail") or {},
+                    result.get("node_effectiveness") or {},
+                    result.get("loop_roi") or {},
+                    datetime.now(),
+                    result.get("status", "completed"),
+                )
+            except asyncpg.PostgresError as e:
+                logger.error(f"[EvalStorage] save_evaluation_result failed: {e}")
+                return
 
         logger.info(f"[EvalStorage] Evaluation result saved: {session_id}")
 
@@ -183,33 +194,30 @@ class EvaluationStorage:
 
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, session_id, overall_score, faithfulness_score,
-                       relevance_score, human_score, metrics_detail,
-                       node_effectiveness, loop_roi, created_at,
-                       evaluated_at, status, error_message
-                FROM evaluation_results
-                WHERE session_id = $1
-                """,
-                UUID(session_id),
-            )
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, session_id, overall_score, faithfulness_score,
+                           relevance_score, human_score, metrics_detail,
+                           node_effectiveness, loop_roi, created_at,
+                           evaluated_at, status, error_message
+                    FROM evaluation_results
+                    WHERE session_id = $1
+                    """,
+                    UUID(session_id),
+                )
+            except asyncpg.PostgresError as e:
+                logger.error(f"[EvalStorage] get_evaluation_result failed: {e}")
+                return None
 
         if not row:
             return None
         return self._row_to_dict(row)
 
-    async def get_evaluation_stats(
-        self,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        limit: int = 100,
-    ) -> List[Dict[str, Any]]:
+    async def get_evaluation_stats(self, limit: int = 100) -> List[Dict[str, Any]]:
         """获取评估统计数据（后台报告）。
 
         Args:
-            start_date: 开始日期（可选）
-            end_date: 结束日期（可选）
             limit: 最大返回数量
 
         Returns:
@@ -217,15 +225,19 @@ class EvaluationStorage:
         """
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            query = """
-                SELECT session_id, overall_score, faithfulness_score,
-                       relevance_score, human_score, status, created_at
-                FROM evaluation_results
-                WHERE status = 'completed'
-                ORDER BY created_at DESC
-                LIMIT $1
-            """
-            rows = await conn.fetch(query, limit)
+            try:
+                query = """
+                    SELECT session_id, overall_score, faithfulness_score,
+                           relevance_score, human_score, status, created_at
+                    FROM evaluation_results
+                    WHERE status = 'completed'
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                """
+                rows = await conn.fetch(query, limit)
+            except asyncpg.PostgresError as e:
+                logger.error(f"[EvalStorage] get_evaluation_stats failed: {e}")
+                return []
 
         return [self._row_to_dict(row) for row in rows]
 
