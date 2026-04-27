@@ -306,3 +306,9 @@ async def get_evaluation_result(session_id: str) -> Optional[Dict[str, Any]]:
     """获取评估结果的便捷函数。"""
     storage = get_evaluation_storage()
     return await storage.get_evaluation_result(session_id)
+
+
+async def get_evaluation_stats(limit: int = 100) -> List[Dict[str, Any]]:
+    """获取评估统计的便捷函数。"""
+    storage = get_evaluation_storage()
+    return await storage.get_evaluation_stats(limit)

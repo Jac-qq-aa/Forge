@@ -41,7 +41,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Lifespan] PG connection pool init failed (will use fallback): {e}")
 
+    # 初始化 LangGraph checkpointer（官方 AsyncPostgresSaver）
+    try:
+        from forge.graph.checkpointer import get_checkpointer
+        await get_checkpointer()
+        logger.info("[Lifespan] LangGraph checkpointer initialized")
+    except Exception as e:
+        logger.warning(f"[Lifespan] Checkpointer init failed: {e}")
+
     yield
+
+    # 关闭时清理 checkpointer
+    try:
+        from forge.graph.checkpointer import close_checkpointer
+        await close_checkpointer()
+        logger.info("[Lifespan] Checkpointer closed")
+    except Exception as e:
+        logger.warning(f"[Lifespan] Checkpointer close error: {e}")
 
     # 关闭时清理连接池
     try:
@@ -58,6 +74,9 @@ async def lifespan(app: FastAPI):
 
 
 from forge.graph import workflow, create_initial_state
+from forge.graph.state import UnifiedState, create_unified_state
+# unified_workflow 现在是异步初始化，使用 get_unified_workflow
+from forge.graph.unified_workflow import get_unified_workflow
 from forge.deep_mode import (
     DeepModeSession,
     SessionNotFoundError,
@@ -67,6 +86,11 @@ from forge.deep_mode import (
 from forge.deep_mode.session_manager import get_session_manager
 from forge.deep_mode.workflow import run_plan_execute
 from forge.deep_mode.websocket_handler import handle_websocket_connection
+from forge.evaluation.storage import (
+    get_evaluation_result,
+    get_session_probe_logs,
+    get_evaluation_stats,
+)
 
 # Create FastAPI app with lifespan
 app = FastAPI(title="Forge 内容转换工作流", lifespan=lifespan)
@@ -452,35 +476,50 @@ async def generate_digital_human_video(request: GenerateDigitalHumanRequest):
         if request.avatar and request.avatar in preset_avatars:
             final_avatar_url = preset_avatars[request.avatar]
 
-        # 2. 如果是自定义头像（base64 数据）
+        # 2. 如果是自定义头像且有 URL（优先使用 OSS URL）
+        elif request.avatar == "custom" and request.avatar_url:
+            final_avatar_url = request.avatar_url
+            logger.info(f"[API] Custom avatar URL from OSS: {request.avatar_url[:60]}...")
+
+        # 3. 如果是自定义头像只有 base64 数据（备用方案）
         elif request.avatar == "custom" and request.avatar_data:
-            # 保存 base64 图片到临时文件
+            # 保存 base64 图片到 OSS（而不是本地文件）
             import base64
             import os
 
             # 解析 base64 数据
             if request.avatar_data.startswith("data:image"):
-                # 移除 data:image/xxx;base64, 前缀
                 avatar_base64 = request.avatar_data.split(",", 1)[1]
             else:
                 avatar_base64 = request.avatar_data
 
-            # 生成文件名
-            avatar_filename = f"avatar_custom_{task_id}.png"
-            avatar_filepath = f"{VIDEO_OUTPUT_DIR}/{avatar_filename}"
-
-            # 保存图片
+            # 尝试上传到 OSS
             try:
-                avatar_bytes = base64.b64decode(avatar_base64)
-                with open(avatar_filepath, "wb") as f:
-                    f.write(avatar_bytes)
-                logger.info(f"[API] Custom avatar saved: {avatar_filepath}")
+                import oss2
+                oss_bucket = os.getenv("OSS_BUCKET", "")
+                oss_endpoint = os.getenv("OSS_ENDPOINT", "")
+                oss_key_id = os.getenv("OSS_ACCESS_KEY_ID", "")
+                oss_key_secret = os.getenv("OSS_ACCESS_KEY_SECRET", "")
 
-                # 使用本地文件路径
-                final_avatar_url = avatar_filepath
+                if all([oss_bucket, oss_endpoint, oss_key_id, oss_key_secret]):
+                    auth = oss2.Auth(oss_key_id, oss_key_secret)
+                    bucket = oss2.Bucket(auth, oss_endpoint, oss_bucket)
+
+                    avatar_bytes = base64.b64decode(avatar_base64)
+                    object_key = f"digital_human/avatar_base64_{task_id}.png"
+                    result = bucket.put_object(object_key, avatar_bytes)
+
+                    if result.status == 200:
+                        final_avatar_url = f"https://{oss_bucket}.{oss_endpoint}/{object_key}"
+                        logger.info(f"[API] Custom avatar uploaded to OSS: {final_avatar_url}")
+                    else:
+                        logger.warning(f"[API] OSS upload failed, using fallback")
+                else:
+                    logger.warning("[API] OSS not configured, cannot use base64 avatar")
+                    return {"success": False, "error": "OSS 配置不完整，无法上传自定义头像"}
             except Exception as e:
-                logger.error(f"[API] Save custom avatar error: {e}")
-                return {"success": False, "error": f"保存自定义头像失败: {e}"}
+                logger.error(f"[API] Upload custom avatar error: {e}")
+                return {"success": False, "error": f"上传自定义头像失败: {e}"}
 
         # 视频文件名
         video_path = f"{VIDEO_OUTPUT_DIR}/digital_human_{task_id}.mp4"
@@ -1059,10 +1098,288 @@ async def restore_session(session_id: str):
     return {"session": session, "restored": True}
 
 
+# ========== 统一 Workflow API（融合快速/深度模式） ==========
+
+
+class UnifiedProcessRequest(BaseModel):
+    """统一处理请求 - 支持快速/深度两种模式。"""
+    mode: str = "fast"  # "fast" or "deep"
+    source_url: str = ""
+    source_platform: str = "zhihu"
+    target_platform: str = "xhs_video"
+    raw_content: dict = None  # 用于深度模式或手动输入
+    user_input: str = ""  # 深度模式的改写需求
+    generate_video: bool = False
+
+
+class UnifiedContinueRequest(BaseModel):
+    """继续执行请求 - 用于 interrupt 后恢复。"""
+    session_id: str
+    human_decision: str  # "accept" / "modify:xxx" / "finalize" / 用户微调消息
+
+
+@app.post("/api/unified/start")
+async def unified_start(request: UnifiedProcessRequest):
+    """启动统一 workflow - 快速模式或深度模式。
+
+    快速模式（mode="fast"）：
+    - 从 URL 抓取内容，自动改写，生成输出
+    - 无需用户干预，一次性完成
+
+    深度模式（mode="deep"）：
+    - 需要提供 raw_content 和 user_input
+    - 生成大纲后暂停，等待用户确认
+    - 返回 outline，需要调用 /api/unified/continue 继续
+
+    Returns:
+        快速模式：完整结果
+        深度模式：大纲和 session_id，需要继续
+    """
+    logger.info(f"[API/Unified] Start: mode={request.mode}, target={request.target_platform}")
+
+    # 创建初始状态
+    state = create_unified_state(
+        mode=request.mode,
+        topic=request.source_url,
+        target_platform=request.target_platform,
+        source_platform=request.source_platform,
+        raw_content=request.raw_content,
+        user_input=request.user_input,
+        generate_video=request.generate_video,
+    )
+    state["skip_publish"] = True  # 默认不实际发布
+
+    session_id = state["session_id"]
+
+    # 执行 workflow（延迟初始化）
+    try:
+        workflow = await get_unified_workflow()
+        result = await workflow.ainvoke(
+            state,
+            config={"configurable": {"thread_id": session_id}}
+        )
+        logger.info(f"[API/Unified] Workflow executed: stage={result.get('stage', 'completed')}")
+
+        # 根据模式返回不同结果
+        if request.mode == "fast":
+            return {
+                "success": True,
+                "session_id": session_id,
+                "script_path": result.get("script_path", ""),
+                "video_path": result.get("video_path", ""),
+                "final_script": result.get("final_script", ""),
+            }
+        else:
+            # 深度模式：在 human_review 前暂停
+            return {
+                "success": True,
+                "session_id": session_id,
+                "stage": result.get("stage", "waiting_outline"),
+                "outline": result.get("outline", ""),
+                "outline_version": result.get("outline_version", 0),
+                "need_continue": result.get("stage") == "waiting_outline",
+            }
+
+    except Exception as e:
+        logger.error(f"[API/Unified] Start failed: {e}")
+        return {"success": False, "error": str(e), "session_id": session_id}
+
+
+@app.post("/api/unified/continue")
+async def unified_continue(request: UnifiedContinueRequest):
+    """继续执行 workflow - 用于 interrupt 后恢复。
+
+    用于深度模式的大纲确认和微调阶段：
+    - 大纲确认：human_decision = "accept" / "modify:xxx" / "finalize"
+    - 微调阶段：human_decision = 用户修改请求 / "finalize"
+
+    Returns:
+        当前状态，可能需要继续或已完成
+    """
+    logger.info(f"[API/Unified] Continue: session={request.session_id}, decision={request.human_decision[:30]}...")
+
+    try:
+        # 使用 Command 来恢复执行，同时更新状态
+        # LangGraph resume 的正确用法：
+        # - 传入 None: 可以 resume，但不能传入新数据
+        # - 传入 dict: 会重新开始（从 START），不会 resume
+        # - 使用 Command: 可以 resume 并同时传入新数据
+        from langgraph.types import Command
+
+        workflow = await get_unified_workflow()
+        result = await workflow.ainvoke(
+            Command(update={"human_decision": request.human_decision}),
+            config={"configurable": {"thread_id": request.session_id}},
+        )
+
+        stage = result.get("stage", "")
+        logger.info(f"[API/Unified] Continue result: stage={stage}")
+
+        # 返回当前状态
+        return {
+            "success": True,
+            "session_id": request.session_id,
+            "stage": stage,
+            "outline": result.get("outline", ""),
+            "outline_version": result.get("outline_version", 0),
+            "current_draft": result.get("current_draft", ""),
+            "final_script": result.get("final_script", ""),
+            "script_path": result.get("script_path", ""),
+            "video_path": result.get("video_path", ""),
+            "need_continue": stage in ["waiting_outline", "tuning"],
+        }
+
+    except Exception as e:
+        logger.error(f"[API/Unified] Continue failed: {e}")
+        return {"success": False, "error": str(e), "session_id": request.session_id}
+
+
+@app.get("/api/unified/status/{session_id}")
+async def unified_status(session_id: str):
+    """获取统一 workflow 状态。"""
+    try:
+        # 从 checkpointer 加载状态（延迟初始化）
+        workflow = await get_unified_workflow()
+        result = await workflow.aget_state(
+            config={"configurable": {"thread_id": session_id}}
+        )
+
+        if not result:
+            return {"success": False, "error": "Session not found"}
+
+        state = result.get("channel_values", {})
+        return {
+            "success": True,
+            "session_id": session_id,
+            "mode": state.get("mode", "unknown"),
+            "stage": state.get("stage", ""),
+            "outline": state.get("outline", ""),
+            "current_draft": state.get("current_draft", ""),
+            "final_script": state.get("final_script", ""),
+        }
+
+    except Exception as e:
+        logger.error(f"[API/Unified] Status failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.websocket("/ws/deep_mode/{session_id}")
 async def deep_mode_websocket(websocket: WebSocket, session_id: str):
     """深度生成实时对话通道（Phase 2）。"""
     await handle_websocket_connection(websocket, session_id)
+
+
+# ========== 评估 API ==========
+
+
+def generate_evaluation_tip(result: dict) -> str:
+    """根据评估结果生成改进提示。
+
+    Args:
+        result: 评估结果字典
+
+    Returns:
+        改进提示字符串
+    """
+    if not result:
+        return "暂无评估数据"
+
+    tips = []
+    overall = result.get("overall_score", 0) or 0
+    faithfulness = result.get("faithfulness_score", 0) or 0
+    relevance = result.get("relevance_score", 0) or 0
+    human_score = result.get("human_score", 0) or 0
+
+    # 根据各项指标生成提示
+    if faithfulness < 0.7:
+        tips.append("内容事实一致性较低，建议检查信息来源准确性")
+    if relevance < 0.7:
+        tips.append("内容相关性较低，建议更聚焦目标主题")
+    if human_score < 0.7:
+        tips.append("内容人性化程度较低，建议增加自然表达和情感元素")
+
+    if not tips:
+        if overall >= 0.9:
+            return "内容质量优秀，保持当前风格"
+        elif overall >= 0.7:
+            return "内容质量良好，可适当优化细节"
+        else:
+            return "建议全面提升内容质量"
+    else:
+        return "；".join(tips)
+
+
+@app.get("/api/evaluation/{session_id}")
+async def api_get_evaluation(session_id: str):
+    """获取评估结果（用户端简单分数）。"""
+    result = await get_evaluation_result(session_id)
+    if result is None:
+        return {"status": "pending"}
+    return {
+        "overall_score": round(result.get("overall_score", 0) * 100),
+        "faithfulness": round(result.get("faithfulness_score", 0) * 100),
+        "relevance": round(result.get("relevance_score", 0) * 100),
+        "human_score": round(result.get("human_score", 0) * 100),
+        "tip": generate_evaluation_tip(result),
+    }
+
+
+@app.get("/api/admin/evaluation/{session_id}/detail")
+async def api_get_evaluation_detail(session_id: str):
+    """获取详细评估结果（后台分析）。"""
+    result = await get_evaluation_result(session_id)
+    logs = await get_session_probe_logs(session_id)
+    return {"evaluation": result, "probe_logs": logs}
+
+
+@app.get("/api/admin/evaluation/stats")
+async def api_get_evaluation_stats(limit: int = 100):
+    """获取评估统计数据。"""
+    stats = await get_evaluation_stats(limit)
+
+    # 计算分布
+    distribution = {
+        "excellent": 0,  # >= 90
+        "good": 0,       # 70-89
+        "fair": 0,       # 50-69
+        "poor": 0,       # < 50
+    }
+
+    avg_scores = {
+        "overall": 0,
+        "faithfulness": 0,
+        "relevance": 0,
+        "human_score": 0,
+    }
+
+    if stats:
+        for item in stats:
+            overall = item.get("overall_score", 0) or 0
+            overall_pct = overall * 100
+
+            if overall_pct >= 90:
+                distribution["excellent"] += 1
+            elif overall_pct >= 70:
+                distribution["good"] += 1
+            elif overall_pct >= 50:
+                distribution["fair"] += 1
+            else:
+                distribution["poor"] += 1
+
+            avg_scores["overall"] += item.get("overall_score", 0) or 0
+            avg_scores["faithfulness"] += item.get("faithfulness_score", 0) or 0
+            avg_scores["relevance"] += item.get("relevance_score", 0) or 0
+            avg_scores["human_score"] += item.get("human_score", 0) or 0
+
+        count = len(stats)
+        avg_scores = {k: round(v / count * 100, 1) for k, v in avg_scores.items()}
+
+    return {
+        "distribution": distribution,
+        "averages": avg_scores,
+        "total_count": len(stats),
+        "results": stats,
+    }
 
 
 if __name__ == "__main__":
