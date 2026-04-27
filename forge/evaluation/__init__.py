@@ -20,6 +20,10 @@ __all__ = [
     "calculate_node_effectiveness",
     "calculate_loop_roi",
     "get_aggregate_metrics",
+    # Worker
+    "process_probe_log",
+    "should_trigger_evaluation",
+    "run_evaluation_worker",
 ]
 
 
@@ -50,4 +54,13 @@ def __getattr__(name: str):
             return calculate_loop_roi
         else:
             return get_aggregate_metrics
+    elif name in ("process_probe_log", "should_trigger_evaluation", "run_evaluation_worker"):
+        from .worker import process_probe_log, should_trigger_evaluation, run_evaluation_worker
+
+        if name == "process_probe_log":
+            return process_probe_log
+        elif name == "should_trigger_evaluation":
+            return should_trigger_evaluation
+        else:
+            return run_evaluation_worker
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
