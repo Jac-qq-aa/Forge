@@ -5,6 +5,7 @@
 - Worker: 后台消费队列，执行评估
 - Engine: RAGAS + LLM Judge 评估引擎
 - Storage: PostgreSQL 存储层
+- ProbeCalculator: 节点有效性 + 循环ROI计算
 """
 
 # 延迟导入，避免循环依赖
@@ -15,6 +16,10 @@ __all__ = [
     "EvaluationStorage",
     "get_evaluation_storage",
     "EvaluationEngine",
+    "get_evaluation_engine",
+    "calculate_node_effectiveness",
+    "calculate_loop_roi",
+    "get_aggregate_metrics",
 ]
 
 
@@ -32,8 +37,17 @@ def __getattr__(name: str):
         from .storage import EvaluationStorage, get_evaluation_storage
 
         return EvaluationStorage if name == "EvaluationStorage" else get_evaluation_storage
-    elif name == "EvaluationEngine":
-        from .engine import EvaluationEngine
+    elif name == "EvaluationEngine" or name == "get_evaluation_engine":
+        from .engine import EvaluationEngine, get_evaluation_engine
 
-        return EvaluationEngine
+        return EvaluationEngine if name == "EvaluationEngine" else get_evaluation_engine
+    elif name in ("calculate_node_effectiveness", "calculate_loop_roi", "get_aggregate_metrics"):
+        from .probe_calculator import calculate_node_effectiveness, calculate_loop_roi, get_aggregate_metrics
+
+        if name == "calculate_node_effectiveness":
+            return calculate_node_effectiveness
+        elif name == "calculate_loop_roi":
+            return calculate_loop_roi
+        else:
+            return get_aggregate_metrics
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
