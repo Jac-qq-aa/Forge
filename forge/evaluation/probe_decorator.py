@@ -1,10 +1,13 @@
 """节点探针装饰器 - 自动记录节点执行前后的状态。"""
 
 import functools
+import logging
 import time
 from typing import Callable, Dict, Any, Optional
 
 from forge.evaluation.probe import probe_node
+
+logger = logging.getLogger(__name__)
 
 # 循环类型到state key的映射
 LOOP_ITERATION_KEY_MAP = {
@@ -65,14 +68,18 @@ def with_probe(
                     "iteration": current_iterations + 1,
                 }
 
-            # 调用探针记录
-            probe_node(
-                node_name=node_name,
-                state_before=state_before,
-                state_after=result,
-                duration_ms=duration_ms,
-                loop_info=loop_info,
-            )
+            # 探针记录（失败不影响主流程）
+            try:
+                probe_node(
+                    node_name=node_name,
+                    state_before=state_before,
+                    state_after=result,
+                    duration_ms=duration_ms,
+                    loop_info=loop_info,
+                )
+            except Exception as e:
+                logger.warning(f"[ProbeDecorator] probe_node failed for {node_name}: {e}")
+                # 继续执行，不影响主流程
 
             return result
 
