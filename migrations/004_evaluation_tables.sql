@@ -4,10 +4,10 @@
 
 -- probe_logs: 节点探针日志
 CREATE TABLE IF NOT EXISTS probe_logs (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- 关联信息
-    session_id VARCHAR(64) NOT NULL,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     article_id VARCHAR(64),
 
     -- 节点信息
@@ -35,17 +35,17 @@ CREATE INDEX IF NOT EXISTS idx_probe_logs_loop ON probe_logs(loop_type, session_
 
 -- evaluation_results: 评估结果汇总
 CREATE TABLE IF NOT EXISTS evaluation_results (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- 关联信息
-    session_id VARCHAR(64) NOT NULL UNIQUE,
+    session_id UUID NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
     article_id VARCHAR(64),
 
-    -- 一级指标（用户展示）
-    overall_score DECIMAL(3,2),
-    faithfulness_score DECIMAL(3,2),
-    relevance_score DECIMAL(3,2),
-    human_score DECIMAL(3,2),
+    -- 一级指标（用户展示）- 评分范围 0.000-1.000
+    overall_score DECIMAL(5,3),
+    faithfulness_score DECIMAL(5,3),
+    relevance_score DECIMAL(5,3),
+    human_score DECIMAL(5,3),
 
     -- 二级指标详情（后台分析）
     metrics_detail JSONB,
@@ -66,6 +66,5 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
 );
 
 -- 索引
-CREATE INDEX IF NOT EXISTS idx_eval_results_session ON evaluation_results(session_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_score ON evaluation_results(overall_score, created_at);
 CREATE INDEX IF NOT EXISTS idx_eval_results_status ON evaluation_results(status);
