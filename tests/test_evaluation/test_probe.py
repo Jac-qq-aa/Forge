@@ -166,3 +166,89 @@ class TestProbeNode:
 
         # 验证lpush被调用（即使失败）
         mock_client.lpush.assert_called_once()
+
+
+class TestWithProbeDecorator:
+    """测试 with_probe 装饰器。"""
+
+    @pytest.mark.asyncio
+    @patch("forge.evaluation.probe_decorator.probe_node")
+    async def test_decorator_calls_probe(self, mock_probe_node):
+        """测试装饰器自动调用probe_node。"""
+        from forge.evaluation.probe_decorator import with_probe
+
+        @with_probe("test_node")
+        async def test_func(state):
+            state["processed"] = True
+            return state
+
+        initial_state = {"session_id": "test-123", "value": 1}
+        result = await test_func(initial_state)
+
+        # 验证返回值正确
+        assert result["processed"] is True
+        assert result["session_id"] == "test-123"
+
+        # 验证probe_node被调用
+        mock_probe_node.assert_called_once()
+        call_kwargs = mock_probe_node.call_args.kwargs
+        assert call_kwargs["node_name"] == "test_node"
+        assert call_kwargs["state_before"] == {"session_id": "test-123", "value": 1}
+        assert call_kwargs["state_after"]["processed"] is True
+        assert call_kwargs["duration_ms"] >= 0
+        assert call_kwargs["loop_info"] is None
+
+    @pytest.mark.asyncio
+    @patch("forge.evaluation.probe_decorator.probe_node")
+    async def test_decorator_with_loop_info(self, mock_probe_node):
+        """测试装饰器带循环信息。"""
+        from forge.evaluation.probe_decorator import with_probe
+
+        @with_probe("humanizer_node", loop_type="humanize_loop")
+        async def test_func(state):
+            state["humanize_revisions"] = state.get("humanize_revisions", 0) + 1
+            return state
+
+        initial_state = {"session_id": "loop-test", "humanize_revisions": 2}
+        result = await test_func(initial_state)
+
+        # 验证返回值正确
+        assert result["humanize_revisions"] == 3
+
+        # 验证loop_info正确计算
+        mock_probe_node.assert_called_once()
+        call_kwargs = mock_probe_node.call_args.kwargs
+        assert call_kwargs["loop_info"]["loop_type"] == "humanize_loop"
+        assert call_kwargs["loop_info"]["iteration"] == 3  # 当前值+1
+
+    @pytest.mark.asyncio
+    @patch("forge.evaluation.probe_decorator.probe_node")
+    async def test_decorator_preserves_return_value(self, mock_probe_node):
+        """测试装饰器不影响原函数返回值。"""
+        from forge.evaluation.probe_decorator import with_probe
+
+        @with_probe("editor")
+        async def editor_node(state):
+            return {"session_id": state["session_id"], "rewritten_draft": "新内容", "ai_score": 0.5}
+
+        result = await editor_node({"session_id": "preserve-test"})
+
+        # 验证返回值是原函数的返回值
+        assert result == {"session_id": "preserve-test", "rewritten_draft": "新内容", "ai_score": 0.5}
+
+    @pytest.mark.asyncio
+    @patch("forge.evaluation.probe_decorator.probe_node")
+    async def test_decorator_handles_missing_iteration_key(self, mock_probe_node):
+        """测试装饰器处理缺失的迭代key。"""
+        from forge.evaluation.probe_decorator import with_probe
+
+        @with_probe("node", loop_type="custom_loop")
+        async def test_func(state):
+            return state
+
+        # state中没有custom_loop_iterations
+        result = await test_func({"session_id": "no-iteration"})
+
+        # 应该使用0作为默认值，iteration=1
+        call_kwargs = mock_probe_node.call_args.kwargs
+        assert call_kwargs["loop_info"]["iteration"] == 1  # 0+1
