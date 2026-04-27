@@ -3,14 +3,18 @@
 import logging
 import os
 import uuid
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.tts_generator import TtsGenerator
 from forge.tools.video_composer import VideoComposer
 from forge.config import VIDEO_OUTPUT_DIR
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
 
+@traceable(name="Director")
+@with_probe("director")
 async def director_node(state: GraphState) -> dict:
     """Generate output based on target platform.
 

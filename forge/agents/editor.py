@@ -1,12 +1,16 @@
 """Editor node - LLM-based content rewriting with knowledge base enhancement."""
 
 import logging
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.llm_client import LLMClient
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
 
+@traceable(name="Editor")
+@with_probe("editor")
 async def editor_node(state: GraphState) -> dict:
     """Rewrite content using Qwen LLM with knowledge base context.
 

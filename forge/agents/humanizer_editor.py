@@ -10,9 +10,11 @@ Handles empty LLM response gracefully to prevent content loss.
 """
 
 import logging
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.llm_client import LLMClient
 from forge.config import MAX_HUMANIZE_REVISIONS
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,8 @@ AI_TO_NATURAL_MAP = {
 }
 
 
+@traceable(name="Humanizer_Editor")
+@with_probe("humanizer_editor", loop_type="humanize_loop")
 async def humanizer_editor_node(state: GraphState) -> dict:
     """Humanize AI-generated content to reduce AI score.
 

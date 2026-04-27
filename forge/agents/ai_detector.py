@@ -11,9 +11,11 @@ Model isolation (same API, different models):
 import logging
 import re
 import numpy as np
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.judge_llm_client import JudgeLLMClient, has_judge_client, JudgeLLMClientError
 from forge.config import AI_THRESHOLD
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,8 @@ def local_ai_detection(content: str) -> dict:
     }
 
 
+@traceable(name="AI_Detector")
+@with_probe("ai_detector")
 async def ai_detector_node(state: GraphState) -> dict:
     """Detect AI-generated content characteristics using Claude.
 

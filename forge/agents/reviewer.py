@@ -1,13 +1,17 @@
 """Reviewer node - LLM-based quality review."""
 
 import logging
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.llm_client import LLMClient
 from forge.config import MAX_REVISIONS
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
 
+@traceable(name="Reviewer")
+@with_probe("reviewer")
 async def reviewer_node(state: GraphState) -> dict:
     """Review rewritten content for quality."""
     rewritten_draft = state.get("rewritten_draft", "")
