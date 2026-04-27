@@ -74,3 +74,20 @@ PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
 PG_USER: str = os.getenv("PG_USER", "forge")
 PG_PASSWORD: str = os.getenv("PG_PASSWORD", "forge123")
 PG_DATABASE: str = os.getenv("PG_DATABASE", "forge")
+
+# ============================================================================
+# Evaluation Configuration
+# ============================================================================
+
+# Redis Queue for evaluation (使用db=1，与session db=0隔离)
+EVAL_REDIS_DB: int = int(os.getenv("EVAL_REDIS_DB", "1"))
+EVAL_QUEUE_NAME: str = os.getenv("EVAL_QUEUE_NAME", "forge:evaluation:queue")
+
+# 评估阈值
+EVAL_FAITHFULNESS_WEIGHT: float = 0.4
+EVAL_RELEVANCE_WEIGHT: float = 0.3
+EVAL_HUMAN_WEIGHT: float = 0.3
+
+# Worker配置
+EVAL_WORKER_BATCH_SIZE: int = int(os.getenv("EVAL_WORKER_BATCH_SIZE", "10"))
+EVAL_WORKER_TIMEOUT: int = int(os.getenv("EVAL_WORKER_TIMEOUT", "60"))

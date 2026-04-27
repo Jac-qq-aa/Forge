@@ -44,3 +44,7 @@ redis>=5.0.0
 
 # PostgreSQL for persistent storage
 asyncpg>=0.29.0
+
+# RAGAS for evaluation
+ragas>=0.1.0
+datasets>=2.14.0
