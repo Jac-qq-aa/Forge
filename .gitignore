@@ -46,6 +46,12 @@ output/
 # Claude Code
 .claude/
 
+# Codex CLI runtime
+.codex/
+
+# LangGraph runtime
+.langgraph_api/
+
 # OS
 .DS_Store
 Thumbs.db
