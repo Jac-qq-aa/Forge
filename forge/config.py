@@ -8,7 +8,7 @@ load_dotenv()
 # Qwen LLM Configuration
 QWEN_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
-QWEN_MODEL = "qwen-plus"  # 改写模型，可选: qwen-max, qwen-turbo
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")  # 改写模型，可选: qwen-max, qwen-turbo, qwen2.5-plus
 
 # Judge LLM Configuration (用于 AI 检测，使用不同模型实现隔离)
 # 使用同一个 API Key，但指定更强的模型进行判断
@@ -31,6 +31,7 @@ ZHIHU_BASE_URL = "https://www.zhihu.com"
 # Output paths (持久化目录)
 VIDEO_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "videos")
 IMAGE_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "images")
+SCRIPT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "scripts")
 COOKIES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "cookies", "xhs_cookies.json")
 
 # Control parameters
@@ -68,12 +69,29 @@ SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
 # ============================================================================
 # PostgreSQL Configuration
 # ============================================================================
+# 注意: 移除了默认凭据，必须通过环境变量配置
+# 启动时会校验必要配置是否完整
 
 PG_HOST: str = os.getenv("PG_HOST", "localhost")
 PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
-PG_USER: str = os.getenv("PG_USER", "forge")
-PG_PASSWORD: str = os.getenv("PG_PASSWORD", "forge123")
+PG_USER: str = os.getenv("PG_USER", "")  # 必填，无默认值
+PG_PASSWORD: str = os.getenv("PG_PASSWORD", "")  # 必填，无默认值
 PG_DATABASE: str = os.getenv("PG_DATABASE", "forge")
+
+# 配置校验（启动时检查必要配置）
+def validate_db_config():
+    """校验数据库配置是否完整，缺失必要配置时抛出异常。"""
+    missing = []
+    if not PG_USER:
+        missing.append("PG_USER")
+    if not PG_PASSWORD:
+        missing.append("PG_PASSWORD")
+    if missing:
+        raise RuntimeError(
+            f"数据库配置不完整，请设置环境变量: {', '.join(missing)}。"
+            f"示例: export PG_USER=forge PG_PASSWORD=your_password"
+        )
+    return True
 
 # ============================================================================
 # Evaluation Configuration
@@ -83,10 +101,13 @@ PG_DATABASE: str = os.getenv("PG_DATABASE", "forge")
 EVAL_REDIS_DB: int = int(os.getenv("EVAL_REDIS_DB", "1"))
 EVAL_QUEUE_NAME: str = os.getenv("EVAL_QUEUE_NAME", "forge:evaluation:queue")
 
-# 评估阈值
-EVAL_FAITHFULNESS_WEIGHT: float = 0.4
-EVAL_RELEVANCE_WEIGHT: float = 0.3
-EVAL_HUMAN_WEIGHT: float = 0.3
+# 评估权重（改写场景专用）
+# - SummarizationScore（忠实度）: 35%
+# - RubricsScore（改写质量）: 30%
+# - Human Score（人性化）: 35%
+EVAL_SUMMARIZATION_WEIGHT: float = float(os.getenv("EVAL_SUMMARIZATION_WEIGHT", "0.35"))
+EVAL_RUBRICS_WEIGHT: float = float(os.getenv("EVAL_RUBRICS_WEIGHT", "0.30"))
+EVAL_HUMAN_WEIGHT: float = float(os.getenv("EVAL_HUMAN_WEIGHT", "0.35"))
 
 # Worker配置
 EVAL_WORKER_BATCH_SIZE: int = int(os.getenv("EVAL_WORKER_BATCH_SIZE", "10"))

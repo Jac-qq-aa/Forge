@@ -188,13 +188,20 @@ class SessionManager:
 
     # ---- 定稿 ----
 
-    async def finalize_session(self, session_id: str) -> Dict[str, Any]:
-        """定稿会话。"""
+    async def finalize_session(self, session_id: str, final_draft: Optional[str] = None) -> Dict[str, Any]:
+        """定稿会话。
+
+        Args:
+            session_id: 会话ID
+            final_draft: 最终稿件内容（可选）。如果不提供，从 session 中读取 current_draft 或 draft_v1。
+        """
         session = await self.load_session(session_id)
         if not session:
             raise SessionNotFoundError(f"Session not found: {session_id}")
 
-        final_draft = session.get("current_draft", "") or session.get("draft_v1", "")
+        # 优先使用传入的 final_draft，否则从 session 中读取
+        if final_draft is None:
+            final_draft = session.get("current_draft", "") or session.get("draft_v1", "")
 
         # PG 定稿 - 必须成功
         try:
@@ -215,6 +222,7 @@ class SessionManager:
             "final_draft": final_draft,
             "current_draft": final_draft,
             "status": "completed",
+            "stage": STAGE_COMPLETED,
             "finalized_at": datetime.now().isoformat(),
         }
 

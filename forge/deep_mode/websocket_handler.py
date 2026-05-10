@@ -1,6 +1,6 @@
 # forge/deep_mode/websocket_handler.py
 
-"""WebSocket 消息处理器 - 使用新的 LangGraph Workflow。"""
+"""WebSocket 消息处理器 - 使用 LangGraph HITL StateGraph。"""
 
 import logging
 import json
@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
 
 from forge.deep_mode.session_manager import get_session_manager
-from forge.deep_mode.workflow import run_tuning_agent
+from forge.deep_mode.graph_hil import approve_content, get_current_state
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,16 @@ async def handle_websocket_connection(websocket: WebSocket, session_id: str):
         session_manager = get_session_manager()
         session = await session_manager.load_session(session_id)
 
+        # 检查session是否存在
+        if session is None:
+            logger.error(f"[WebSocket] Session not found: {session_id}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Session not found: {session_id}",
+            })
+            await websocket.close()
+            return
+
         # 发送当前状态
         await websocket.send_json({
             "type": "stage_update",
@@ -45,96 +55,139 @@ async def handle_websocket_connection(websocket: WebSocket, session_id: str):
             message_type = data.get("type")
 
             if message_type == "tuning_message":
-                # 处理用户微调请求
+                # 处理用户微调请求（通过 HITL StateGraph）
                 user_message = data.get("content", "")
-                logger.info(f"[WebSocket] User message: {user_message[:50]}...")
+                logger.info(f"[WebSocket] User tuning request: {user_message[:50]}...")
 
-                # 获取当前草稿
-                current_draft = session.get("current_draft") or session.get("draft_v1", "")
+                try:
+                    # 使用 HITL StateGraph 的 approve_content 进入 tuning 节点
+                    result = await approve_content(
+                        thread_id=session_id,
+                        tuning_request=user_message,
+                    )
 
-                # 运行 Tuning Agent
-                response = await run_tuning_agent(current_draft, user_message)
-                logger.info(f"[WebSocket] Agent response: {response[:200]}...")
+                    # 获取更新后的状态
+                    current_state = await get_current_state(session_id)
+                    updated_draft = current_state.get("current_draft", "")
+                    tuning_messages = current_state.get("tuning_messages", [])
 
-                # 判断响应类型
-                # 优先检查【回答】标记
-                is_question_response = response.startswith("【回答】")
+                    # 判断响应类型（基于最后一条 tuning message）
+                    is_question_response = False
+                    display_response = updated_draft
 
-                # 如果没有【回答】标记，但响应很短且不包含完整文章结构，可能也是回答
-                if not is_question_response:
-                    # 检查是否是回答格式（没有完整文章结构）
-                    response_length_ratio = len(response) / len(current_draft) if current_draft else 0
-                    # 如果响应明显比原文短（<20%）且不包含换行段落，可能是回答
-                    if response_length_ratio < 0.2 and '\n\n' not in response[:500]:
-                        logger.info(f"[WebSocket] Short response without article structure, treating as question")
-                        is_question_response = True
+                    if tuning_messages:
+                        last_msg = tuning_messages[-1]
+                        if last_msg.get("is_question"):
+                            is_question_response = True
+                            display_response = last_msg.get("response", "")
+                            # 移除【回答】前缀
+                            if display_response.startswith("【回答】"):
+                                display_response = display_response[4:]
 
-                if is_question_response:
-                    # 提问类响应 - 不更新草稿，只添加对话历史
-                    updated_draft = current_draft
-                    # 移除【回答】前缀（如果存在）
-                    if response.startswith("【回答】"):
-                        display_response = response[4:]
-                    else:
-                        display_response = response
-                    logger.info(f"[WebSocket] Question response, not updating draft")
-                else:
-                    # 修改类响应 - 检查是否是有效修改
-                    # 如果返回内容明显比原文短（<30%），可能是片段而非完整文章
-                    response_length_ratio = len(response) / len(current_draft) if current_draft else 0
+                    logger.info(f"[WebSocket] Tuning done: is_question={is_question_response}, draft_len={len(updated_draft)}")
 
-                    if response_length_ratio < 0.3 and len(current_draft) > 200:
-                        # 可能只返回了片段，警告并保持原文
-                        logger.warning(f"[WebSocket] Response too short ({response_length_ratio:.1%} of original), may be fragment")
-                        updated_draft = current_draft
-                        display_response = f"⚠️ 修改可能不完整，原文已保留。\n\nAgent 回复：{response}\n\n请尝试更明确地描述修改需求，例如：'请修改第二段，返回完整的修改后文章'"
-                    else:
-                        # 有效修改，更新草稿
-                        updated_draft = response
-                        display_response = response
+                    # 更新会话状态（同步到 session_manager）
+                    new_history = session.get("tuning_history", [])
+                    new_history.append({
+                        "role": "user",
+                        "content": user_message,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    new_history.append({
+                        "role": "agent",
+                        "content": display_response,
+                        "is_question": is_question_response,
+                        "timestamp": datetime.now().isoformat(),
+                    })
 
-                # 更新会话状态
-                new_history = session.get("tuning_history", [])
-                new_history.append({
-                    "role": "user",
-                    "content": user_message,
-                    "timestamp": datetime.now().isoformat(),
-                })
-                new_history.append({
-                    "role": "agent",
-                    "content": display_response,  # 显示的响应（已去除【回答】前缀）
-                    "is_question": is_question_response,  # 标记是否为提问响应
-                    "timestamp": datetime.now().isoformat(),
-                })
+                    session = await session_manager.update_session(
+                        session_id,
+                        current_draft=updated_draft,
+                        tuning_history=new_history,
+                        stage=current_state.get("stage", "tuning"),
+                    )
 
-                session = await session_manager.update_session(
-                    session_id,
-                    current_draft=updated_draft,  # 只有修改类响应才更新
-                    tuning_history=new_history,
-                )
+                    # 发送响应
+                    await websocket.send_json({
+                        "type": "tuning_response",
+                        "session_id": session_id,
+                        "content": display_response,
+                        "is_question": is_question_response,
+                        "updated_draft": updated_draft,
+                    })
 
-                # 发送响应
-                await websocket.send_json({
-                    "type": "tuning_response",
-                    "session_id": session_id,
-                    "content": display_response,
-                    "is_question": is_question_response,  # 前端可据此决定是否更新草稿区
-                    "updated_draft": updated_draft,
-                })
+                    await session_manager.heartbeat(session_id)
 
-                # 刷新心跳
-                await session_manager.heartbeat(session_id)
+                except Exception as e:
+                    logger.error(f"[WebSocket] Tuning failed: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Tuning failed: {e}",
+                    })
 
             elif message_type == "finalize":
-                # 定稿
-                session = await session_manager.finalize_session(session_id)
-                await websocket.send_json({
-                    "type": "finalized",
-                    "session_id": session_id,
-                    "status": "completed",
-                    "final_draft": session.get("final_draft"),
-                })
-                break  # 结束连接
+                # 定稿（通过 HITL StateGraph）
+                user_content = data.get("content")
+
+                try:
+                    # 如果用户提供了编辑内容，先更新状态
+                    if user_content:
+                        logger.info(f"[WebSocket] Finalize with user edited content: {len(user_content)} chars")
+                        session = await session_manager.update_session(
+                            session_id,
+                            current_draft=user_content
+                        )
+
+                    # 使用 HITL StateGraph 的 approve_content 定稿
+                    result = await approve_content(
+                        thread_id=session_id,
+                        tuning_request=None,  # 不传 tuning_request 表示定稿
+                    )
+
+                    # 获取最终状态
+                    final_state = await get_current_state(session_id)
+                    final_draft = final_state.get("final_draft", "") or final_state.get("current_draft", "")
+
+                    # 同步到 session_manager
+                    session = await session_manager.finalize_session(
+                        session_id,
+                        final_draft=user_content or final_draft,
+                    )
+
+                    await websocket.send_json({
+                        "type": "finalized",
+                        "session_id": session_id,
+                        "status": "completed",
+                        "final_draft": final_draft,
+                        "current_draft": user_content or final_draft,
+                    })
+
+                    # === 自进化处理 ===
+                    try:
+                        from forge.evolution import get_quality_knowledge_manager
+                        from forge.evaluation.storage import get_evaluation_storage
+
+                        eval_storage = get_evaluation_storage()
+                        eval_result = await eval_storage.get_evaluation_result(session_id)
+
+                        quality_kb = get_quality_knowledge_manager()
+                        if eval_result and await quality_kb.should_archive_as_quality_case(session, eval_result):
+                            tuning_history = session.get("tuning_history", [])
+                            case_id = await quality_kb.archive_case(session, tuning_history, eval_result)
+                            if case_id:
+                                logger.info(f"[WebSocket] Quality case archived: {case_id}")
+
+                    except Exception as e:
+                        logger.warning(f"[WebSocket] Evolution processing failed (non-critical): {e}")
+
+                    break
+
+                except Exception as e:
+                    logger.error(f"[WebSocket] Finalize failed: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Finalize failed: {e}",
+                    })
 
             elif message_type == "heartbeat":
                 # 心跳检测 - 刷新 TTL
