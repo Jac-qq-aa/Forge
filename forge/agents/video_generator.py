@@ -7,13 +7,17 @@ import logging
 import os
 import hashlib
 import time
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.video_generator import VideoGenerator, VideoGeneratorError
 from forge.config import VIDEO_OUTPUT_DIR
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
 
+@traceable(name="Video_Generator")
+@with_probe("video_generator")
 async def video_generator_node(state: GraphState) -> dict:
     """从改写后的脚本生成视频。
 

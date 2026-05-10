@@ -106,12 +106,13 @@ async def human_review_node(state: UnifiedState) -> dict:
 # ============================================================================
 
 @traceable(name="Deep_Outline_Reviser")
+@with_probe("deep_outline_reviser")
 async def deep_outline_reviser_node(state: UnifiedState) -> dict:
     """大纲修改节点。
 
     输入：
     - outline: 当前大纲
-    - human_decision: 用户修改意见
+    - human_decision: 用户修改意见（可能带 "modify:" 前缀）
 
     输出：
     - outline: 修改后的大纲
@@ -121,11 +122,25 @@ async def deep_outline_reviser_node(state: UnifiedState) -> dict:
     human_decision = state.get("human_decision", "")
     outline_version = state.get("outline_version", 1)
 
+    # 处理 human_decision：去掉 "modify:" 前缀（如果存在）
+    user_feedback = human_decision
+    if human_decision.startswith("modify:"):
+        user_feedback = human_decision[7:]  # 去掉 "modify:" 前缀（7个字符）
+
     logger.info(f"[Deep_Outline_Reviser] Revising outline (v{outline_version})")
-    logger.info(f"[Deep_Outline_Reviser] User feedback: {human_decision[:50]}...")
+    logger.info(f"[Deep_Outline_Reviser] User feedback: {user_feedback[:50]}...")
+
+    # 检查 feedback 是否为空
+    if not user_feedback or user_feedback.strip() == "":
+        logger.warning("[Deep_Outline_Reviser] Empty user feedback, keeping original outline")
+        return {
+            "outline": outline,
+            "outline_version": outline_version,
+            "stage": STAGE_WAITING_OUTLINE,
+        }
 
     try:
-        revised_outline = await revise_outline(outline, human_decision)
+        revised_outline = await revise_outline(outline, user_feedback)
         logger.info(f"[Deep_Outline_Reviser] Outline revised: {len(revised_outline)} chars")
     except Exception as e:
         logger.error(f"[Deep_Outline_Reviser] Revision failed: {e}")
@@ -185,6 +200,7 @@ async def deep_content_generator_node(state: UnifiedState) -> dict:
 # ============================================================================
 
 @traceable(name="Tuning_Agent")
+@with_probe("tuning_agent")
 async def tuning_agent_node(state: UnifiedState) -> dict:
     """微调对话 Agent 节点。
 

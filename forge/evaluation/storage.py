@@ -72,12 +72,12 @@ class EvaluationStorage:
                     UUID(session_id),
                     payload["node_name"],
                     datetime.fromtimestamp(payload["timestamp"]),
-                    payload.get("input_metrics") or {},
-                    payload.get("output_metrics") or {},
+                    json.dumps(payload.get("input_metrics") or {}),  # asyncpg需要JSON字符串
+                    json.dumps(payload.get("output_metrics") or {}),  # asyncpg需要JSON字符串
                     payload.get("duration_ms"),
                     payload.get("loop_type"),
                     payload.get("loop_iteration", 0),
-                    payload.get("metadata") or {},
+                    json.dumps(payload.get("metadata") or {}),  # asyncpg需要JSON字符串
                 )
             except asyncpg.PostgresError as e:
                 logger.error(f"[EvalStorage] save_probe_log failed: {e}")
@@ -129,17 +129,39 @@ class EvaluationStorage:
             session_id: 会话ID（UUID字符串）
             result: 评估结果字典，包含：
                 - overall_score: 总体评分
-                - faithfulness_score: 事实一致性评分
-                - relevance_score: 相关性评分
+                - summarization_score: 忠实度评分（0-1）- 存入metrics_detail
+                - rubrics_score: 改写质量评分（1-5）- 存入metrics_detail
                 - human_score: 人性化评分
                 - metrics_detail: 详细指标
                 - node_effectiveness: 节点效率分析
                 - loop_roi: 循环ROI分析
                 - status: 状态
+
+        注意：数据库表保持原有结构（faithfulness_score, relevance_score），
+        新指标（summarization_score, rubrics_score）存入metrics_detail JSONB字段，
+        以实现向后兼容。
         """
         if not is_valid_uuid(session_id):
             logger.warning(f"[EvalStorage] Invalid session_id format: {session_id}")
             return
+
+        # 将新指标合并到metrics_detail中
+        metrics_detail = result.get("metrics_detail") or {}
+        if result.get("summarization_score") is not None:
+            metrics_detail["summarization_score"] = result["summarization_score"]
+        if result.get("rubrics_score") is not None:
+            metrics_detail["rubrics_score"] = result["rubrics_score"]
+
+        # 向后兼容：将新指标映射到旧字段（用于兼容现有前端）
+        # summarization_score -> faithfulness_score (范围转换)
+        # rubrics_score -> relevance_score (范围转换)
+        faithfulness_compat = None
+        relevance_compat = None
+        if result.get("summarization_score") is not None:
+            faithfulness_compat = result["summarization_score"]  # 0-1范围
+        if result.get("rubrics_score") is not None:
+            # rubrics_score是1-5范围，转换为0-1范围
+            relevance_compat = (result["rubrics_score"] - 1) / 4.0 if result["rubrics_score"] else None
 
         pool = await self._get_pool()
         async with pool.acquire() as conn:
@@ -164,12 +186,12 @@ class EvaluationStorage:
                     """,
                     UUID(session_id),
                     result.get("overall_score"),
-                    result.get("faithfulness_score"),
-                    result.get("relevance_score"),
+                    faithfulness_compat,  # 兼容映射
+                    relevance_compat,     # 兼容映射
                     result.get("human_score"),
-                    result.get("metrics_detail") or {},
-                    result.get("node_effectiveness") or {},
-                    result.get("loop_roi") or {},
+                    json.dumps(metrics_detail),  # 包含新指标
+                    json.dumps(result.get("node_effectiveness") or {}),
+                    json.dumps(result.get("loop_roi") or {}),
                     datetime.now(),
                     result.get("status", "completed"),
                 )

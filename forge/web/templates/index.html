@@ -407,22 +407,16 @@
                         <div class="deep-voice-option" data-voice="longwan" onclick="selectDeepVoice('longwan')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
                             <span style="font-size: 14px;">🎉 活泼女声</span>
                         </div>
-                        <div class="deep-voice-option" data-voice="longshuang" onclick="selectDeepVoice('longshuang')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
-                            <span style="font-size: 14px;">📚 知性女声</span>
-                        </div>
                         <!-- 男声选项 -->
                         <div class="deep-voice-option" data-voice="longfei" onclick="selectDeepVoice('longfei')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
                             <span style="font-size: 14px;">👔 沉稳男声</span>
                         </div>
-                        <div class="deep-voice-option" data-voice="longteng" onclick="selectDeepVoice('longteng')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
-                            <span style="font-size: 14px;">🎤 大气男声</span>
-                        </div>
-                        <!-- 童声选项 -->
-                        <div class="deep-voice-option" data-voice="longjielidou" onclick="selectDeepVoice('longjielidou')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
-                            <span style="font-size: 14px;">🧒 活泼童声</span>
+                        <div class="deep-voice-option" data-voice="longshuo" onclick="selectDeepVoice('longshuo')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                            <span style="font-size: 14px;">🎙️ 磁性男声</span>
                         </div>
                     </div>
                     <p id="deep-selected-voice-info" style="margin-top: 10px; color: #666;">当前选择：温柔女声（龙小春）</p>
+                    <p style="margin-top: 5px; font-size: 12px; color: #999;">注：部分高级语音需付费开通</p>
                 </div>
 
                 <button id="deep-gen-video-btn" class="btn btn-primary" onclick="generateDeepDigitalHuman()">
@@ -605,22 +599,16 @@
                     <div class="voice-option" data-voice="longwan" onclick="selectVoice('longwan')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
                         <span style="font-size: 14px;">🎉 活泼女声</span>
                     </div>
-                    <div class="voice-option" data-voice="longshuang" onclick="selectVoice('longshuang')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
-                        <span style="font-size: 14px;">📚 知性女声</span>
-                    </div>
                     <!-- 男声选项 -->
                     <div class="voice-option" data-voice="longfei" onclick="selectVoice('longfei')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
                         <span style="font-size: 14px;">👔 沉稳男声</span>
                     </div>
-                    <div class="voice-option" data-voice="longteng" onclick="selectVoice('longteng')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
-                        <span style="font-size: 14px;">🎤 大气男声</span>
-                    </div>
-                    <!-- 童声选项 -->
-                    <div class="voice-option" data-voice="longjielidou" onclick="selectVoice('longjielidou')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
-                        <span style="font-size: 14px;">🧒 活泼童声</span>
+                    <div class="voice-option" data-voice="longshuo" onclick="selectVoice('longshuo')" style="cursor: pointer; padding: 8px 15px; border: 2px solid #ddd; border-radius: 20px;">
+                        <span style="font-size: 14px;">🎙️ 磁性男声</span>
                     </div>
                 </div>
                 <p id="selected-voice-info" style="margin-top: 10px; color: #666;">当前选择：温柔女声（龙小春）</p>
+                <p style="margin-top: 5px; font-size: 12px; color: #999;">注：部分高级语音需付费开通</p>
             </div>
 
             <div class="result-actions">
@@ -730,15 +718,17 @@
         let currentTaskDir = "";     // 当前任务目录路径（用于下载）
         let selectedVoice = "longxiaochun";  // 当前选择的语音 ID
 
-        // 语音名称映射
+        // 语音名称映射（免费可用）
         const VOICE_NAMES = {
             "longxiaochun": "温柔女声（龙小春）",
             "longyue": "甜美女声（龙悦）",
             "longwan": "活泼女声（龙婉）",
-            "longshuang": "知性女声（龙双）",
             "longfei": "沉稳男声（龙飞）",
-            "longteng": "大气男声（龙腾）",
-            "longjielidou": "活泼童声（龙杰力豆）",
+            "longshuo": "磁性男声（龙硕）",
+            // 需付费开通
+            "longshuang": "知性女声（龙双）- 需付费",
+            "longteng": "大气男声（龙腾）- 需付费",
+            "longjielidou": "活泼童声（龙杰力豆）- 需付费",
         };
 
         // 预设数字人图片 URL
@@ -1251,6 +1241,7 @@
         let deepSessionId = null;
         let deepSelectedAvatar = 'default1';  // 深度生成模式选择的形象
         let deepCustomAvatarData = null;      // 自定义头像的 base64 数据
+        let deepCustomAvatarUrl = null;       // 自定义头像的 OSS URL
         let deepSelectedVoice = 'longxiaochun';  // 深度生成模式选择的语音
 
         // 语音名称映射（复用）
@@ -1258,10 +1249,12 @@
             "longxiaochun": "温柔女声（龙小春）",
             "longyue": "甜美女声（龙悦）",
             "longwan": "活泼女声（龙婉）",
-            "longshuang": "知性女声（龙双）",
             "longfei": "沉稳男声（龙飞）",
-            "longteng": "大气男声（龙腾）",
-            "longjielidou": "活泼童声（龙杰力豆）",
+            "longshuo": "磁性男声（龙硕）",
+            // 需付费开通
+            "longshuang": "知性女声（龙双）- 需付费",
+            "longteng": "大气男声（龙腾）- 需付费",
+            "longjielidou": "活泼童声（龙杰力豆）- 需付费",
         };
         let currentMode = 'normal';  // 当前模式：'normal' 快速改写 / 'deep' 深度生成
 
@@ -1692,7 +1685,7 @@
         }
 
         // 上传自定义头像
-        function uploadDeepCustomAvatar(event) {
+        async function uploadDeepCustomAvatar(event) {
             const file = event.target.files[0];
             if (!file) return;
 
@@ -1713,7 +1706,7 @@
             reader.onload = function(e) {
                 // 检查图片分辨率
                 const img = new Image();
-                img.onload = function() {
+                img.onload = async function() {
                     const width = img.width;
                     const height = img.height;
 
@@ -1730,6 +1723,7 @@
                         customOption.style.background = '';
                         deepSelectedAvatar = 'default1';
                         deepCustomAvatarData = null;
+                        deepCustomAvatarUrl = null;
                         return;
                     }
 
@@ -1755,7 +1749,33 @@
                     });
 
                     document.getElementById('deep-selected-avatar-info').textContent = '当前选择：自定义形象 (' + width + '×' + height + ')';
-                    showNotification('自定义头像已上传，分辨率符合要求', 'success');
+
+                    // 上传到 OSS 获取公网 URL
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', file);
+
+                        const response = await fetch('/api/upload_image', {
+                            method: 'POST',
+                            body: formData,
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success && data.url) {
+                            deepCustomAvatarUrl = data.url;
+                            showNotification('自定义头像上传成功！分辨率符合要求', 'success');
+                        } else {
+                            showNotification('上传失败：' + (data.error || '未知错误'), 'error');
+                            // 重置为默认
+                            deepSelectedAvatar = 'default1';
+                            deepCustomAvatarUrl = null;
+                        }
+                    } catch (error) {
+                        showNotification('上传失败：' + error.message, 'error');
+                        deepSelectedAvatar = 'default1';
+                        deepCustomAvatarUrl = null;
+                    }
                 };
                 img.src = e.target.result;
             };
@@ -1790,9 +1810,13 @@
                 session_id: deepSessionId,
             };
 
-            // 如果是自定义头像，添加头像数据
-            if (avatar === 'custom' && deepCustomAvatarData) {
-                requestBody.avatar_data = deepCustomAvatarData;
+            // 如果是自定义头像，优先使用 OSS URL，否则使用 base64 数据
+            if (avatar === 'custom') {
+                if (deepCustomAvatarUrl) {
+                    requestBody.avatar_url = deepCustomAvatarUrl;
+                } else if (deepCustomAvatarData) {
+                    requestBody.avatar_data = deepCustomAvatarData;
+                }
             }
 
             try {
@@ -1842,7 +1866,10 @@
                         return;
                     } else if (data.status === 'failed') {
                         document.getElementById('deep-video-status').style.display = 'none';
-                        showNotification('视频生成失败：' + (data.error || '未知错误'), 'error');
+                        const errorMsg = data.error || '未知错误';
+                        // 弹窗提示
+                        alert('❌ 数字人视频生成失败\n\n' + errorMsg);
+                        showNotification('视频生成失败：' + errorMsg, 'error');
                         document.getElementById('deep-gen-video-btn').disabled = false;
                         return;
                     }
@@ -1962,7 +1989,9 @@
                     showDeepVideoResult(data.video_url || data.result_url, data.video_path, data.task_dir);
                 } else if (data.status === 'failed') {
                     document.getElementById('deep-video-timeout-section').style.display = 'none';
-                    showNotification('视频生成失败: ' + (data.error || '未知错误'), 'error');
+                    const errorMsg = data.error || '未知错误';
+                    alert('❌ 数字人视频生成失败\n\n' + errorMsg);
+                    showNotification('视频生成失败: ' + errorMsg, 'error');
                 } else {
                     showNotification(`任务状态: ${data.status}，请继续等待`, 'info');
                 }
@@ -3130,10 +3159,13 @@
 
                     if (status === 'failed') {
                         clearInterval(progressInterval);
-                        progressStatus.textContent = '生成失败: ' + (statusData.error || '未知错误');
+                        const errorMsg = statusData.error || '未知错误';
+                        progressStatus.textContent = '生成失败: ' + errorMsg;
                         generateBtn.disabled = false;
                         generateBtn.textContent = '🧑 生成数字人视频';
-                        showNotification('数字人视频生成失败', 'error');
+                        // 弹窗提示
+                        alert('❌ 数字人视频生成失败\n\n' + errorMsg);
+                        showNotification('数字人视频生成失败: ' + errorMsg, 'error');
                         return;
                     }
 
@@ -3210,6 +3242,7 @@
                                 <div class="history-item-info" onclick="showSessionDetail('${session.session_id}')">
                                     <div class="history-item-title">${escapeHtml(title.substring(0, 50))}</div>
                                     <div class="history-item-meta">${date}</div>
+                                    <div class="history-item-hint" style="font-size:11px;color:#888;">点击查看详情 →</div>
                                 </div>
                                 <span class="history-item-stage">${stageText}</span>
                                 <button class="history-delete-btn" onclick="event.stopPropagation(); deleteSingleSession('${session.session_id}')">
@@ -3438,6 +3471,61 @@
                     // 显示下载按钮
                     document.getElementById('history-download-text-btn').style.display = 'inline-block';
                     html += '</div>';
+                }
+
+                // 显示评估指标
+                try {
+                    const evalResponse = await fetch(`/api/evaluation/${sessionId}`);
+                    const evalData = await evalResponse.json();
+
+                    if (evalData && evalData.overall_score !== undefined) {
+                        html += '<div class="source-article" style="margin-top:15px;background:#fff3e0;border:2px solid #FF9800;">';
+                        html += '<h3>📊 评估指标</h3>';
+
+                        // 综合评分
+                        const overallScore = evalData.overall_score || 0;
+                        html += `<div style="margin-bottom:15px;">
+                            <strong>综合评分:</strong>
+                            <div style="display:flex;align-items:center;gap:10px;">
+                                <div style="flex:1;height:20px;background:#eee;border-radius:10px;overflow:hidden;">
+                                    <div style="width:${overallScore}%;height:100%;background:linear-gradient(90deg,#4CAF50,#8BC34A);border-radius:10px;"></div>
+                                </div>
+                                <span style="font-weight:bold;color:#4CAF50;">${overallScore}%</span>
+                            </div>
+                        </div>`;
+
+                        // 各项评分
+                        const faithfulness = evalData.faithfulness || 0;
+                        const relevance = evalData.relevance || 0;
+                        const humanScore = evalData.human_score || 0;
+
+                        html += `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;margin-bottom:15px;">
+                            <div style="text-align:center;">
+                                <div style="font-size:12px;color:#666;">事实一致性</div>
+                                <div style="font-size:24px;font-weight:bold;color:${faithfulness >= 80 ? '#4CAF50' : faithfulness >= 60 ? '#FF9800' : '#f44336'};">${faithfulness}%</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:12px;color:#666;">相关性</div>
+                                <div style="font-size:24px;font-weight:bold;color:${relevance >= 80 ? '#4CAF50' : relevance >= 60 ? '#FF9800' : '#f44336'};">${relevance}%</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:12px;color:#666;">人性化</div>
+                                <div style="font-size:24px;font-weight:bold;color:${humanScore >= 80 ? '#4CAF50' : humanScore >= 60 ? '#FF9800' : '#f44336'};">${humanScore}%</div>
+                            </div>
+                        </div>`;
+
+                        // 建议提示
+                        if (evalData.tip) {
+                            html += `<div style="background:#fff;padding:10px;border-radius:4px;border:1px solid #ddd;">
+                                <span style="color:#FF9800;">💡 建议:</span> ${evalData.tip}
+                            </div>`;
+                        }
+
+                        html += '</div>';
+                    }
+                } catch (evalError) {
+                    // 评估获取失败，不影响主显示
+                    console.log('Evaluation fetch failed:', evalError);
                 }
 
                 // 显示对话记录（完整内容）

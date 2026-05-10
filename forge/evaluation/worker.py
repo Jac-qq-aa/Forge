@@ -79,9 +79,46 @@ async def process_probe_log(payload: dict) -> None:
                 logger.warning(f"[EvalWorker] No logs found for session: {session_id}")
                 return
 
+            # 从probe_logs提取original_text和draft_text
+            original_text = None
+            draft_text = None
+
+            # 从editor节点的output_metrics获取改写后的草稿
+            for log in session_logs:
+                if log.get("node_name") == "editor":
+                    output_metrics = log.get("output_metrics", {})
+                    draft_text = output_metrics.get("draft_text", "")
+                    break
+
+            # 从session表获取原始文本（source_article）
+            from forge.storage.pg_client import get_pg_pool
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                from uuid import UUID
+                session_row = await conn.fetchrow(
+                    'SELECT source_article FROM sessions WHERE id = $1',
+                    UUID(session_id)
+                )
+                if session_row and session_row.get("source_article"):
+                    source_article = session_row["source_article"]
+                    if isinstance(source_article, dict):
+                        original_text = source_article.get("text", "")
+                    elif isinstance(source_article, str):
+                        import json
+                        try:
+                            source_article = json.loads(source_article)
+                            original_text = source_article.get("text", "")
+                        except:
+                            original_text = source_article
+
             # 执行评估
             engine = EvaluationEngine()
-            eval_result = await engine.evaluate_session(session_logs)
+            eval_result = await engine.evaluate_session(
+                session_id=session_id,
+                probe_logs=session_logs,
+                original_text=original_text,
+                draft_text=draft_text,
+            )
 
             # 保存评估结果
             await save_evaluation_result(session_id, eval_result)

@@ -218,6 +218,7 @@ class DigitalHumanGenerator:
         """
         segment_videos = []
         segment_audios = []
+        first_error = None  # 保存第一个错误信息
 
         for i, segment in enumerate(segments):
             logger.info(f"[DigitalHuman] 处理第 {i+1}/{len(segments)} 段")
@@ -231,7 +232,10 @@ class DigitalHumanGenerator:
                 await tts.generate(segment, audio_path)
                 segment_audios.append(audio_path)
             except Exception as e:
-                logger.error(f"[DigitalHuman] 第 {i+1} 段 TTS 失败: {e}")
+                error_msg = str(e)
+                logger.error(f"[DigitalHuman] 第 {i+1} 段 TTS 失败: {error_msg}")
+                if first_error is None:
+                    first_error = error_msg  # 保存第一个错误
                 continue  # 跳过该段，继续下一段
 
             # 检查音频时长
@@ -255,11 +259,18 @@ class DigitalHumanGenerator:
                 segment_videos.append(segment_path)
                 logger.info(f"[DigitalHuman] 分段视频已保存: {segment_path}")
             except Exception as e:
-                logger.error(f"[DigitalHuman] 第 {i+1} 段生成失败: {e}")
+                error_msg = str(e)
+                logger.error(f"[DigitalHuman] 第 {i+1} 段生成失败: {error_msg}")
+                if first_error is None:
+                    first_error = error_msg
                 continue
 
         if not segment_videos:
-            raise DigitalHumanError("所有分段生成失败")
+            # 传递详细的错误信息
+            if first_error:
+                raise DigitalHumanError(f"所有分段生成失败: {first_error}")
+            else:
+                raise DigitalHumanError("所有分段生成失败")
 
         # 合并视频
         if len(segment_videos) == 1:

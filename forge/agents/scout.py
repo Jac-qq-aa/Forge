@@ -2,9 +2,11 @@
 
 import logging
 import urllib.parse
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.zhihu_scraper_persistent import ZhihuScraper
 from forge.tools.wechat_scraper import WechatScraper
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,8 @@ def extract_keyword_from_sogou_url(url: str) -> str:
     return ""
 
 
+@traceable(name="Scout")
+@with_probe("scout")
 async def scout_node(state: GraphState) -> dict:
     """Scrape content from Zhihu, WeChat, or use manually input content."""
     topic = state.get("topic", "")

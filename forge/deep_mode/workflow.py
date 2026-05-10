@@ -153,9 +153,9 @@ async def revise_outline(current_outline: str, user_feedback: str) -> str:
 {user_feedback}
 
 ## 修改要求
-1. 针对反馈修改
-2. 保持整体结构
-3. 直接输出修改后的大纲
+1. 严格按照用户反馈修改
+2. 用户要求删除就删除，要求增加就增加，不限制结构变化
+3. 保持剩余内容的逻辑连贯性
 
 直接输出修改后的大纲：
 """
@@ -173,37 +173,89 @@ async def revise_outline(current_outline: str, user_feedback: str) -> str:
 async def generate_content(
     outline: str,
     source_article: Dict[str, str],
-    rag_context: str = ""
-) -> str:
-    """根据大纲生成全文。"""
-    logger.info("[Workflow] Generating content...")
+    rag_context: str = "",
+    return_template_id: bool = False,
+) -> str | tuple:
+    """根据大纲生成全文。
 
-    prompt = f"""请根据大纲生成完整文章：
+    使用动态 Prompt 模板 + 高质量案例参考。
 
-## 大纲
-{outline}
+    Args:
+        outline: 大纲内容
+        source_article: 原文章数据 {title, text, url, platform}
+        rag_context: RAG 知识库素材
+        return_template_id: 是否返回模板ID（用于效果统计）
 
-## 原文章内容
-标题：{source_article.get('title', '')}
-内容：{source_article.get('text', '')[:2000]}
+    Returns:
+        生成的草稿内容，如果 return_template_id=True 则返回 (draft, template_id)
+    """
+    logger.info("[Workflow] Generating content with dynamic template...")
 
-## 知识库素材
-{rag_context if rag_context else "无"}
+    # 初始化变量（降级时的默认值）
+    template = None
+    quality_context = "无参考案例"
+    prompt_manager = None
 
-## 生成要求
-1. **保留核心观点**：原文论点不能丢弃
-2. **按大纲结构**：每个部分对应段落
-3. **知识库融入**：自然引用，不超过10%
-4. **严禁编造**：没有具体信息用模糊表述
+    # 获取动态模板和高质量案例参考
+    try:
+        from forge.evolution import get_prompt_manager, get_quality_knowledge_manager, ensure_default_templates
 
-直接输出文章：
-"""
+        # 确保默认模板已初始化
+        await ensure_default_templates()
 
+        # 获取当前激活的模板
+        prompt_manager = get_prompt_manager()
+        template = await prompt_manager.get_active_template("deep_content_generator")
+
+        # 获取高质量案例参考
+        quality_kb = get_quality_knowledge_manager()
+        platform = source_article.get("platform", "zhihu")
+        quality_context = await quality_kb.get_context_for_generation(outline, platform)
+
+    except Exception as e:
+        # 降级：使用硬编码模板
+        logger.warning(f"[Workflow] Evolution system unavailable, using fallback: {e}")
+        from forge.evolution import get_fallback_template, skip_quality_context
+
+        template = get_fallback_template("deep_content_generator")
+        quality_context = skip_quality_context()
+
+    # 确保 template 存在（双重保险）
+    if template is None:
+        from forge.evolution import get_fallback_template
+        template = get_fallback_template("deep_content_generator")
+
+    # 组装 prompt
+    system_prompt = template.get("system_prompt", "")
+    user_prompt_template = template.get("user_prompt_template", "")
+
+    # 安全格式化（缺失变量使用默认值）
+    variables = {
+        "outline": outline,
+        "title": source_article.get("title", ""),
+        "raw_content": source_article.get("text", "")[:2000],
+        "rag_context": rag_context or "无",
+        "quality_context": quality_context,
+    }
+
+    # 格式化 user_prompt
+    if prompt_manager:
+        user_prompt = prompt_manager.safe_format_template(user_prompt_template, variables)
+    else:
+        # 直接格式化，缺失变量使用默认值
+        safe_vars = {k: v or "无" for k, v in variables.items()}
+        user_prompt = user_prompt_template.format(**safe_vars)
+
+    # 调用 LLM
     try:
         llm = LLMClient()
-        draft = await llm.chat_with_retry(prompt)
-        logger.info(f"[Workflow] Content generated: {len(draft)} chars")
+        draft = await llm.chat_with_retry(user_prompt, system_prompt)
+        logger.info(f"[Workflow] Content generated: {len(draft)} chars, template={template.get('id')}")
+
+        if return_template_id:
+            return draft, template.get("id")
         return draft
+
     except Exception as e:
         logger.error(f"[Workflow] Content generation failed: {e}")
         raise
@@ -648,3 +700,122 @@ class TuningAgentFallback:
     async def process_request(self, current_draft: str, user_message: str) -> str:
         logger.warning("[Workflow] TuningAgentFallback is deprecated")
         return await _fallback_tuning(current_draft, user_message)
+
+
+# ============================================================================
+# StateGraph Integration (LangSmith 显示节点名称)
+# ============================================================================
+
+# 导出 StateGraph 版本的函数
+from forge.deep_mode.graph import (
+    get_deep_mode_app,
+    get_deep_mode_graph,
+    run_outline_generation,
+    run_outline_revision,
+    run_content_generation,
+    run_tuning,
+    run_finalize,
+    DeepModeGraphState,
+)
+
+# StateGraph 版本的 run_plan_execute（可选使用）
+async def run_plan_execute_graph(
+    session_id: str,
+    stage: str,
+    user_input: str = None,
+    user_feedback: str = None,
+) -> Dict[str, Any]:
+    """使用 StateGraph 运行 Plan-Execute（LangSmith 显示节点名称）。
+
+    Args:
+        session_id: 会话 ID
+        stage: 阶段（outline_generation, outline_revision, content_generation）
+        user_input: 用户输入（outline_generation 时需要）
+        user_feedback: 大纲修改反馈（outline_revision 时需要）
+
+    Returns:
+        更新后的状态字典
+
+    LangSmith 显示节点名称：
+        - rag_search
+        - generate_outline
+        - revise_outline
+        - generate_content
+        - tuning
+        - finalize
+    """
+    from forge.deep_mode.session_manager import get_session_manager
+
+    session_manager = get_session_manager()
+    session = await session_manager.load_session(session_id)
+
+    source_article = session.get("source_article", {})
+
+    if stage == "outline_generation":
+        # 使用 StateGraph 运行
+        result = await run_outline_generation(
+            session_id=session_id,
+            source_article=source_article,
+            user_input=user_input or "",
+        )
+
+        # 更新 session
+        session = await session_manager.update_session(
+            session_id,
+            rag_context=result.get("rag_context", ""),
+            outline=result.get("outline", ""),
+            outline_version=result.get("outline_version", 1),
+            stage=result.get("stage", "waiting_outline"),
+        )
+
+    elif stage == "outline_revision":
+        # 获取当前状态
+        current_state = {
+            "session_id": session_id,
+            "source_article": source_article,
+            "outline": session.get("outline", ""),
+            "outline_version": session.get("outline_version", 1),
+            "rag_context": session.get("rag_context", ""),
+        }
+
+        # 使用 StateGraph 运行
+        result = await run_outline_revision(
+            session_id=session_id,
+            current_state=current_state,
+            user_feedback=user_feedback or user_input or "",
+        )
+
+        # 更新 session
+        session = await session_manager.update_session(
+            session_id,
+            outline=result.get("outline", ""),
+            outline_version=result.get("outline_version", session.get("outline_version", 1) + 1),
+            stage=result.get("stage", "waiting_outline"),
+        )
+
+    elif stage == "content_generation":
+        # 获取当前状态
+        current_state = {
+            "session_id": session_id,
+            "source_article": source_article,
+            "outline": session.get("outline", ""),
+            "outline_version": session.get("outline_version", 1),
+            "rag_context": session.get("rag_context", ""),
+        }
+
+        # 使用 StateGraph 运行
+        result = await run_content_generation(
+            session_id=session_id,
+            current_state=current_state,
+        )
+
+        # 更新 session
+        session = await session_manager.update_session(
+            session_id,
+            draft_v1=result.get("draft_v1", ""),
+            current_draft=result.get("current_draft", ""),
+            template_id=result.get("template_id"),  # 用于效果统计
+            stage=result.get("stage", "tuning"),
+        )
+
+    return session

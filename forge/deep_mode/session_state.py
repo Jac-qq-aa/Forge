@@ -55,6 +55,10 @@ class DeepModeSession(TypedDict, total=False):
     updated_at: Optional[str]
     finalized_at: Optional[str]
     final_draft: Optional[str]
+    # 视频生成相关
+    video_path: Optional[str]
+    video_task_id: Optional[str]
+    video_status: Optional[str]  # pending, running, completed, failed
     # 兼容旧字段
     article_id: Optional[str]
     draft_v1: Optional[str]

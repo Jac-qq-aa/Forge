@@ -1,13 +1,17 @@
 """Publisher node - dual-platform content publishing."""
 
 import logging
+from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.xhs_publisher import XhsPublisher
 from forge.tools.zhihu_publisher import ZhihuPublisher
+from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
 
 
+@traceable(name="Publisher")
+@with_probe("publisher")
 async def publisher_node(state: GraphState) -> dict:
     """Publish content to target platform."""
     target_platform = state.get("target_platform", "xhs_video")

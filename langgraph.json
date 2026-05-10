@@ -1,0 +1,7 @@
+{
+  "dependencies": ["./forge"],
+  "graphs": {
+    "deep_mode_agent": "./forge/deep_mode/server_graph.py:app"
+  },
+  "env": "./.env"
+}

@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 _pg_pool: Optional[asyncpg.Pool] = None
 
 
+def is_valid_uuid(session_id: str) -> bool:
+    """检查 session_id 是否是有效的 UUID 格式。
+
+    Args:
+        session_id: 会话 ID 字符串
+
+    Returns:
+        True 如果是有效 UUID 格式，False 否则
+    """
+    try:
+        UUID(session_id)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
 async def get_pg_pool() -> asyncpg.Pool:
     """获取 PostgreSQL 连接池（单例）。"""
     global _pg_pool
@@ -44,7 +60,11 @@ async def close_pg_pool():
 
 
 class PGSessionManager:
-    """PostgreSQL 会话管理器。"""
+    """PostgreSQL 会话管理器。
+
+    注意：session_id 必须是有效的 UUID 格式才能存储到 PG。
+    如果 session_id 不是 UUID 格式，PG 操作会被跳过，只使用 Redis 存储。
+    """
 
     # ---- Session 操作 ----
 
@@ -53,7 +73,19 @@ class PGSessionManager:
         session_id: str,
         data: Dict[str, Any]
     ) -> bool:
-        """创建会话记录。"""
+        """创建会话记录。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+            data: 会话数据
+
+        Returns:
+            True 如果成功创建，False 如果 session_id 不是 UUID 格式
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip create: session_id '{session_id}' is not UUID format")
+            return False
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -79,7 +111,18 @@ class PGSessionManager:
         return True
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """获取会话记录（已删除返回 None）。"""
+        """获取会话记录（已删除返回 None）。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+
+        Returns:
+            会话数据字典，如果 session_id 不是 UUID 格式返回 None
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip get: session_id '{session_id}' is not UUID format")
+            return None
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -98,7 +141,20 @@ class PGSessionManager:
         data: Dict[str, Any],
         increment_version: bool = False
     ) -> bool:
-        """更新会话记录。"""
+        """更新会话记录。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+            data: 更新数据
+            increment_version: 是否增加版本号（乐观锁）
+
+        Returns:
+            True 如果成功更新，False 如果 session_id 不是 UUID 格式
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip update: session_id '{session_id}' is not UUID format")
+            return False
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             # 乐观锁检查
@@ -159,7 +215,19 @@ class PGSessionManager:
         session_id: str,
         final_draft: str
     ) -> bool:
-        """定稿会话。"""
+        """定稿会话。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+            final_draft: 最终草稿内容
+
+        Returns:
+            True 如果成功定稿，False 如果 session_id 不是 UUID 格式
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip finalize: session_id '{session_id}' is not UUID format")
+            return False
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -219,7 +287,19 @@ class PGSessionManager:
         session_id: str,
         message: Dict[str, Any]
     ) -> bool:
-        """追加消息。"""
+        """追加消息。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+            message: 消息内容
+
+        Returns:
+            True 如果成功追加，False 如果 session_id 不是 UUID 格式
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip append_message: session_id '{session_id}' is not UUID format")
+            return False
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -242,7 +322,18 @@ class PGSessionManager:
         self,
         session_id: str
     ) -> List[Dict[str, Any]]:
-        """获取会话所有消息。"""
+        """获取会话所有消息。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+
+        Returns:
+            消息列表，如果 session_id 不是 UUID 格式返回空列表
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip get_messages: session_id '{session_id}' is not UUID format")
+            return []
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -266,7 +357,21 @@ class PGSessionManager:
         draft: str,
         token_count: Optional[int] = None
     ) -> bool:
-        """保存文章版本。"""
+        """保存文章版本。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+            version: 版本号
+            draft: 草稿内容
+            token_count: Token 数量
+
+        Returns:
+            True 如果成功保存，False 如果 session_id 不是 UUID 格式
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip save_version: session_id '{session_id}' is not UUID format")
+            return False
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -287,7 +392,18 @@ class PGSessionManager:
         self,
         session_id: str
     ) -> List[Dict[str, Any]]:
-        """获取会话所有版本。"""
+        """获取会话所有版本。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+
+        Returns:
+            版本列表，如果 session_id 不是 UUID 格式返回空列表
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip get_versions: session_id '{session_id}' is not UUID format")
+            return []
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -330,7 +446,18 @@ class PGSessionManager:
     # ---- 软删除操作 ----
 
     async def soft_delete_session(self, session_id: str) -> bool:
-        """软删除单条会话。"""
+        """软删除单条会话。
+
+        Args:
+            session_id: 会话 ID（必须是有效 UUID 格式）
+
+        Returns:
+            True 如果成功删除，False 如果 session_id 不是 UUID 格式
+        """
+        if not is_valid_uuid(session_id):
+            logger.warning(f"[PG] Skip soft_delete: session_id '{session_id}' is not UUID format")
+            return False
+
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             result = await conn.execute(

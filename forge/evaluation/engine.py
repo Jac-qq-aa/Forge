@@ -1,10 +1,13 @@
-"""评估引擎 - RAGAS + LLM Judge 评估。
+"""评估引擎 - 改写场景专用评估。
 
 核心功能：
 - evaluate_session: 执行完整评估
-- _run_ragas_evaluation: RAGAS评估（或LLM Judge fallback）
-- _run_style_evaluation: 风格质量LLM Judge
-- _calculate_overall: 综合评分（权重：Faithfulness 40% + Relevance 30% + Human 30%）
+- _run_summarization_eval: SummarizationScore评估（改写是否保留原文核心信息）
+- _run_rubrics_eval: RubricsScore评估（改写质量维度）
+- _run_style_evaluation: 风格质量LLM Judge（人性化程度）
+- _calculate_overall: 综合评分（权重：Summarization 35% + Rubrics 30% + Human 35%）
+
+评估模型：使用通义千问 qwen-max，避免依赖 OpenAI API。
 """
 
 import logging
@@ -12,9 +15,11 @@ import re
 from typing import Dict, Any, List, Optional
 
 from forge.config import (
-    EVAL_FAITHFULNESS_WEIGHT,
-    EVAL_RELEVANCE_WEIGHT,
+    EVAL_SUMMARIZATION_WEIGHT,
+    EVAL_RUBRICS_WEIGHT,
     EVAL_HUMAN_WEIGHT,
+    QWEN_API_KEY,
+    QWEN_API_URL,
 )
 from forge.evaluation.probe_calculator import (
     calculate_node_effectiveness,
@@ -25,18 +30,29 @@ from forge.evaluation.storage import EvaluationStorage, get_evaluation_storage
 
 logger = logging.getLogger(__name__)
 
-# 尝试导入RAGAS，如果失败则使用LLM Judge fallback
+# 尝试导入RAGAS新版API
 try:
-    from ragas import evaluate
-    from ragas.metrics import faithfulness, answer_relevancy
+    from ragas.dataset_schema import SingleTurnSample
+    from ragas.metrics import SummarizationScore, RubricsScore
+    from ragas.llms import LangchainLLMWrapper
+    from langchain_openai import ChatOpenAI
     RAGAS_AVAILABLE = True
 except ImportError:
     RAGAS_AVAILABLE = False
     logger.warning("[EvalEngine] RAGAS not available, will use LLM Judge fallback")
 
+# 改写质量评分维度定义
+REWRITE_RUBRICS = {
+    "score1_description": "改写完全偏离原文核心观点，或有大量编造虚假信息，内容与原文无关。",
+    "score2_description": "改写保留了部分核心观点，但有重大遗漏或关键信息丢失，风格转换过度导致内容失真。",
+    "score3_description": "改写基本保留核心观点，风格转换适度，但有轻微信息偏差或表达不够自然。",
+    "score4_description": "改写完整保留核心观点，表达方式有明显改变，信息准确，风格转换恰当。",
+    "score5_description": "改写完美保留核心观点，表达方式原创且自然流畅，信息准确无误，风格转换出色。",
+}
+
 
 class EvaluationEngine:
-    """评估引擎 - 执行RAGAS和LLM Judge评估。"""
+    """评估引擎 - 执行改写场景专用评估。"""
 
     def __init__(self, storage: Optional[EvaluationStorage] = None):
         """初始化评估引擎。
@@ -46,6 +62,25 @@ class EvaluationEngine:
         """
         self.storage = storage or get_evaluation_storage()
         self._judge_client = None
+        self._evaluator_llm = None
+
+    def _get_evaluator_llm(self):
+        """获取评估LLM（使用通义千问qwen-max）。
+
+        Returns:
+            LangchainLLMWrapper包装的ChatOpenAI实例
+        """
+        if self._evaluator_llm is None:
+            if not RAGAS_AVAILABLE:
+                raise ImportError("RAGAS not available, cannot create evaluator LLM")
+            self._evaluator_llm = LangchainLLMWrapper(ChatOpenAI(
+                base_url=QWEN_API_URL,
+                api_key=QWEN_API_KEY,
+                model="qwen-max",
+                timeout=60.0,
+            ))
+            logger.info("[EvalEngine] Evaluator LLM initialized: qwen-max")
+        return self._evaluator_llm
 
     async def evaluate_session(
         self,
@@ -59,15 +94,15 @@ class EvaluationEngine:
         Args:
             session_id: 会话ID
             probe_logs: 探针日志列表
-            original_text: 原始素材文本（用于RAGAS评估）
-            draft_text: 改写后的草稿文本（用于风格评估）
+            original_text: 原始素材文本（用于改写评估）
+            draft_text: 改写后的草稿文本（用于质量评估）
 
         Returns:
             评估结果字典，包含：
                 - overall_score: 总体评分
-                - faithfulness_score: 事实一致性评分
-                - relevance_score: 相关性评分
-                - human_score: 人性化评分
+                - summarization_score: 忠实度评分（0-1）
+                - rubrics_score: 改写质量评分（1-5）
+                - human_score: 人性化评分（1-10）
                 - node_effectiveness: 节点效率分析
                 - loop_roi: 循环ROI分析
                 - metrics_detail: 详细指标
@@ -78,8 +113,8 @@ class EvaluationEngine:
         result = {
             "session_id": session_id,
             "overall_score": None,
-            "faithfulness_score": None,
-            "relevance_score": None,
+            "summarization_score": None,
+            "rubrics_score": None,
             "human_score": None,
             "node_effectiveness": {},
             "loop_roi": {},
@@ -97,16 +132,34 @@ class EvaluationEngine:
             # 3. 获取聚合指标
             result["metrics_detail"] = get_aggregate_metrics(probe_logs)
 
-            # 4. 执行RAGAS评估（如果有原始文本）
+            # 4. 执行SummarizationScore评估（改写忠实度）
             if original_text and draft_text:
                 try:
-                    ragas_result = await self._run_ragas_evaluation(original_text, draft_text)
-                    result["faithfulness_score"] = ragas_result.get("faithfulness_score")
-                    result["relevance_score"] = ragas_result.get("relevance_score")
+                    summ_result = await self._run_summarization_eval(original_text, draft_text)
+                    result["summarization_score"] = summ_result.get("summarization_score")
+                    if summ_result.get("raw_output"):
+                        result["metrics_detail"]["summarization"] = summ_result["raw_output"]
                 except Exception as e:
-                    logger.error(f"[EvalEngine] RAGAS evaluation failed: {e}")
+                    logger.error(f"[EvalEngine] Summarization evaluation failed: {e}")
+                    # Fallback to LLM Judge
+                    try:
+                        fallback_result = await self._run_fallback_eval(original_text, draft_text)
+                        result["summarization_score"] = fallback_result.get("faithfulness_score")
+                        result["metrics_detail"]["fallback_used"] = True
+                    except Exception as e2:
+                        logger.error(f"[EvalEngine] Fallback evaluation also failed: {e2}")
 
-            # 5. 执行风格质量评估（如果有草稿文本）
+            # 5. 执行RubricsScore评估（改写质量）
+            if original_text and draft_text:
+                try:
+                    rubrics_result = await self._run_rubrics_eval(original_text, draft_text)
+                    result["rubrics_score"] = rubrics_result.get("rubrics_score")
+                    if rubrics_result.get("raw_output"):
+                        result["metrics_detail"]["rubrics"] = rubrics_result["raw_output"]
+                except Exception as e:
+                    logger.error(f"[EvalEngine] Rubrics evaluation failed: {e}")
+
+            # 6. 执行风格质量评估（人性化程度）
             if draft_text:
                 try:
                     style_result = await self._run_style_evaluation(draft_text)
@@ -116,7 +169,7 @@ class EvaluationEngine:
                 except Exception as e:
                     logger.error(f"[EvalEngine] Style evaluation failed: {e}")
 
-            # 6. 计算综合评分
+            # 7. 计算综合评分
             result["overall_score"] = self._calculate_overall(result)
 
             result["status"] = "completed"
@@ -127,7 +180,7 @@ class EvaluationEngine:
             result["status"] = "failed"
             result["error"] = str(e)
 
-        # 7. 保存结果
+        # 8. 保存结果
         try:
             await self._save_result(session_id, result)
         except Exception as e:
@@ -135,72 +188,113 @@ class EvaluationEngine:
 
         return result
 
-    async def _run_ragas_evaluation(
+    async def _run_summarization_eval(
         self,
         original_text: str,
         draft_text: str,
     ) -> Dict[str, Any]:
-        """执行RAGAS评估或LLM Judge fallback。
+        """执行SummarizationScore评估。
+
+        评估改写内容是否保留了原文的核心信息。
+        使用RAGAS的SummarizationScore metric。
 
         Args:
             original_text: 原始素材文本
             draft_text: 改写后的草稿文本
 
         Returns:
-            评估结果字典
+            评估结果字典，包含summarization_score（0-1范围）
         """
-        if RAGAS_AVAILABLE:
-            try:
-                return await self._run_ragas_native(original_text, draft_text)
-            except Exception as e:
-                logger.warning(f"[EvalEngine] RAGAS native failed, falling back to LLM Judge: {e}")
+        if not RAGAS_AVAILABLE:
+            raise ImportError("RAGAS not available")
 
-        # Fallback to LLM Judge
-        return await self._run_llm_judge_evaluation(original_text, draft_text)
+        # 截取文本长度，避免超出API限制
+        original_trimmed = original_text[:2000] if len(original_text) > 2000 else original_text
+        draft_trimmed = draft_text[:2000] if len(draft_text) > 2000 else draft_text
 
-    async def _run_ragas_native(
-        self,
-        original_text: str,
-        draft_text: str,
-    ) -> Dict[str, Any]:
-        """执行原生RAGAS评估。
+        # 原文过短时，SummarizationScore效果不佳，使用fallback
+        if len(original_trimmed) < 200:
+            logger.warning("[EvalEngine] Original text too short for SummarizationScore, using fallback")
+            return await self._run_fallback_eval(original_text, draft_text)
 
-        Args:
-            original_text: 原始素材文本
-            draft_text: 改写后的草稿文本
-
-        Returns:
-            RAGAS评估结果
-        """
-        from datasets import Dataset
-
-        # 构建RAGAS数据集
-        # RAGAS需要特定的数据格式
-        data = {
-            "question": [original_text[:500]],  # 使用原始文本作为"问题"上下文
-            "answer": [draft_text[:2000]],     # 改写后的文本作为"答案"
-            "contexts": [[original_text[:2000]]],  # 上下文
-        }
-
-        dataset = Dataset.from_dict(data)
-
-        # 执行评估
-        results = evaluate(
-            dataset,
-            metrics=[faithfulness, answer_relevancy],
+        sample = SingleTurnSample(
+            response=draft_trimmed,
+            reference_contexts=[original_trimmed],
         )
 
-        return {
-            "faithfulness_score": float(results.get("faithfulness", 0.0)),
-            "relevance_score": float(results.get("answer_relevancy", 0.0)),
-        }
+        scorer = SummarizationScore(llm=self._get_evaluator_llm())
 
-    async def _run_llm_judge_evaluation(
+        try:
+            score_result = await scorer.single_turn_ascore(sample)
+            # RAGAS返回的是ScoreResult对象，需要提取实际分数
+            if hasattr(score_result, 'value'):
+                score = float(score_result.value)
+            else:
+                score = float(score_result) if score_result else 0.0
+
+            logger.info(f"[EvalEngine] SummarizationScore: {score}")
+
+            return {
+                "summarization_score": round(score, 4),
+                "raw_output": str(score_result) if score_result else None,
+            }
+        except Exception as e:
+            logger.error(f"[EvalEngine] SummarizationScore execution failed: {e}")
+            raise
+
+    async def _run_rubrics_eval(
         self,
         original_text: str,
         draft_text: str,
     ) -> Dict[str, Any]:
-        """使用LLM Judge进行评估（RAGAS fallback）。
+        """执行RubricsScore评估。
+
+        使用自定义评分规则评估改写质量维度。
+
+        Args:
+            original_text: 原始素材文本
+            draft_text: 改写后的草稿文本
+
+        Returns:
+            评估结果字典，包含rubrics_score（1-5范围）
+        """
+        if not RAGAS_AVAILABLE:
+            raise ImportError("RAGAS not available")
+
+        original_trimmed = original_text[:2000] if len(original_text) > 2000 else original_text
+        draft_trimmed = draft_text[:2000] if len(draft_text) > 2000 else draft_text
+
+        sample = SingleTurnSample(
+            response=draft_trimmed,
+            reference=original_trimmed,
+        )
+
+        scorer = RubricsScore(rubrics=REWRITE_RUBRICS, llm=self._get_evaluator_llm())
+
+        try:
+            score_result = await scorer.single_turn_ascore(sample)
+            # RAGAS返回的是ScoreResult对象，需要提取实际分数
+            if hasattr(score_result, 'value'):
+                score = float(score_result.value)
+            else:
+                score = float(score_result) if score_result else 0.0
+
+            logger.info(f"[EvalEngine] RubricsScore: {score}")
+
+            return {
+                "rubrics_score": round(score, 2),
+                "raw_output": str(score_result) if score_result else None,
+            }
+        except Exception as e:
+            logger.error(f"[EvalEngine] RubricsScore execution failed: {e}")
+            raise
+
+    async def _run_fallback_eval(
+        self,
+        original_text: str,
+        draft_text: str,
+    ) -> Dict[str, Any]:
+        """LLM Judge fallback评估（当RAGAS不可用时）。
 
         Args:
             original_text: 原始素材文本
@@ -209,11 +303,10 @@ class EvaluationEngine:
         Returns:
             评估结果字典
         """
-        prompt = f"""请评估以下内容改写的质量。
+        prompt = f"""请评估以下内容改写的忠实度。
 
 评估维度：
-1) 忠实度（Faithfulness）：改写内容是否忠实于原始素材，没有添加虚假信息或遗漏关键信息
-2) 相关性（Relevance）：改写内容是否保持与原始主题的相关性
+忠实度（Faithfulness）：改写内容是否忠实于原始素材，保留核心观点，没有添加虚假信息或遗漏关键信息。
 
 原始素材（前1000字）：
 {original_text[:1000]}
@@ -221,20 +314,20 @@ class EvaluationEngine:
 改写内容（前2000字）：
 {draft_text[:2000]}
 
-请按1-10分进行评分，并以以下格式返回：
+请按0-1分进行评分（0表示完全不忠实，1表示完全忠实），并以以下格式返回：
 Faithfulness评分: [分数]
-Relevance评分: [分数]
 
 简要说明评分理由。"""
 
         response = await self._call_judge_llm(prompt)
-
         faithfulness_score = self.parse_score(response, "Faithfulness")
-        relevance_score = self.parse_score(response, "Relevance")
+
+        # 将1-10分转换为0-1分（用于兼容SummarizationScore范围）
+        if faithfulness_score is not None:
+            faithfulness_score = faithfulness_score / 10.0
 
         return {
             "faithfulness_score": faithfulness_score,
-            "relevance_score": relevance_score,
             "raw_response": response,
         }
 
@@ -244,16 +337,28 @@ Relevance评分: [分数]
     ) -> Dict[str, Any]:
         """执行风格质量LLM Judge评估。
 
+        评估人性化程度：自然度、多样性、情感表达。
+
         Args:
             draft_text: 改写后的草稿文本
 
         Returns:
             评估结果字典
         """
-        prompt = f"""请评估以下内容的人性化程度。评估维度：1) 自然度：语言是否自然流畅，不显得机械化
-2) 多样性：句式和用词是否多样化，避免重复模式
-3) 情感表达：是否有适当的情感色彩和个性化表达改写内容（前2000字）：
-{draft_text[:2000]}请按1-10分进行评分，并以以下格式返回：Human评分: [分数]简要说明评分理由。"""
+        prompt = f"""请评估以下内容的人性化程度。
+
+评估维度：
+1) 自然度：语言是否自然流畅，不显得机械化，避免"首先其次最后"等模板化表达
+2) 多样性：句式和用词是否多样化，避免重复模式，长短句交替
+3) 情感表达：是否有适当的情感色彩和个性化表达，如"说实话"、"有意思的是"等口语化表达
+
+改写内容（前2000字）：
+{draft_text[:2000]}
+
+请按1-10分进行评分，并以以下格式返回：
+Human评分: [分数]
+
+简要说明评分理由。"""
 
         try:
             response = await self._call_judge_llm(prompt)
@@ -293,7 +398,7 @@ Relevance评分: [分数]
             label: 分数标签（如"Faithfulness"、"Human"）
 
         Returns:
-            分数值（1-10），如果未找到返回None
+            分数值，如果未找到返回None
         """
         if not response:
             return None
@@ -312,7 +417,7 @@ Relevance评分: [分数]
             rf"{label}\([^)]*\)[:：]\s*(\d+\.?\d*)",
             # 中文标签支持
             rf"忠实度评分[:：]\s*(\d+\.?\d*)" if label.lower() == "faithfulness" else None,
-            rf"相关性评分[:：]\s*(\d+\.?\d*)" if label.lower() == "relevance" else None,
+            rf"人性化评分[:：]\s*(\d+\.?\d*)" if label.lower() == "human" else None,
         ]
 
         for pattern in patterns:
@@ -322,11 +427,7 @@ Relevance评分: [分数]
             if match:
                 try:
                     score = float(match.group(1))
-                    # 检查并警告超出范围的分数
-                    if score < 1.0 or score > 10.0:
-                        logger.warning(f"[Engine] parse_score got unusual value {score} for '{label}', clamping to [1,10]")
-                    # 限制在1-10范围内
-                    return min(max(score, 1.0), 10.0)
+                    return score
                 except (ValueError, IndexError):
                     continue
 
@@ -337,9 +438,14 @@ Relevance评分: [分数]
         """计算综合评分。
 
         权重：
-        - Faithfulness: 40%
-        - Relevance: 30%
-        - Human: 30%
+        - SummarizationScore（忠实度）: 35%
+        - RubricsScore（改写质量）: 30%
+        - Human Score（人性化）: 35%
+
+        注意：
+        - SummarizationScore范围：0-1，需要转换为1-10后计算
+        - RubricsScore范围：1-5，需要转换为1-10后计算
+        - Human Score范围：1-10
 
         Args:
             result: 评估结果字典
@@ -347,23 +453,28 @@ Relevance评分: [分数]
         Returns:
             综合评分（1-10），如果无法计算返回None
         """
-        faithfulness = result.get("faithfulness_score")
-        relevance = result.get("relevance_score")
+        summarization = result.get("summarization_score")
+        rubrics = result.get("rubrics_score")
         human = result.get("human_score")
 
-        # 收集有效的评分
+        # 收集有效的评分（统一转换为1-10范围）
         valid_scores = []
         weights = []
 
-        if faithfulness is not None:
-            valid_scores.append(faithfulness * EVAL_FAITHFULNESS_WEIGHT)
-            weights.append(EVAL_FAITHFULNESS_WEIGHT)
+        if summarization is not None:
+            # SummarizationScore是0-1范围，转换为1-10
+            normalized_summ = summarization * 10
+            valid_scores.append(normalized_summ * EVAL_SUMMARIZATION_WEIGHT)
+            weights.append(EVAL_SUMMARIZATION_WEIGHT)
 
-        if relevance is not None:
-            valid_scores.append(relevance * EVAL_RELEVANCE_WEIGHT)
-            weights.append(EVAL_RELEVANCE_WEIGHT)
+        if rubrics is not None:
+            # RubricsScore是1-5范围，转换为1-10
+            normalized_rubrics = rubrics * 2
+            valid_scores.append(normalized_rubrics * EVAL_RUBRICS_WEIGHT)
+            weights.append(EVAL_RUBRICS_WEIGHT)
 
         if human is not None:
+            # Human Score已经是1-10范围
             valid_scores.append(human * EVAL_HUMAN_WEIGHT)
             weights.append(EVAL_HUMAN_WEIGHT)
 
