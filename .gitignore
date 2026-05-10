@@ -39,6 +39,15 @@ output/
 *.mp4
 *.wav
 
+# Test files and artifacts
+test_*.mp3
+test_*.jpg
+avatar_standard.jpg
+test_digital_human_api.py
+test_gateway_flow.py
+trace_report_*.md
+data/
+
 # IDE
 .idea/
 .vscode/
