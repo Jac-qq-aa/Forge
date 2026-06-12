@@ -6,12 +6,11 @@ Requires Milvus Docker running.
 
 import os
 import logging
+import httpx
 from typing import List, Optional
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType
-from sentence_transformers import SentenceTransformer
 
-# 强制使用本地缓存，避免联网检查模型更新
-os.environ["HF_HUB_OFFLINE"] = "1"
+# 不再使用本地模型，改用 Qwen API 生成嵌入
 
 from forge.knowledge.config import (
     MILVUS_HOST,
@@ -19,6 +18,7 @@ from forge.knowledge.config import (
     COLLECTION_NAME,
     VECTOR_DIMENSION,
 )
+from forge.config import QWEN_API_KEY, QWEN_API_URL
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,8 @@ class KnowledgeBase:
 
     def __init__(self):
         self.collection = None
-        self.encoder = None
         self._connected = False
+        self._embedding_model = "text-embedding-v3"  # Qwen 嵌入模型
 
     def _ensure_connection(self):
         """Ensure Milvus connection is established."""
@@ -44,10 +44,6 @@ class KnowledgeBase:
                 port=MILVUS_PORT
             )
             logger.info(f"[KnowledgeBase] Connected to Milvus: {MILVUS_HOST}:{MILVUS_PORT}")
-
-            # Initialize encoder (use local cache only)
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2', local_files_only=True)
-            logger.info("[KnowledgeBase] Encoder loaded: all-MiniLM-L6-v2 (local)")
 
             # Create collection if not exists
             if not self._has_collection():
@@ -88,11 +84,66 @@ class KnowledgeBase:
         )
         logger.info(f"[KnowledgeBase] Created collection: {COLLECTION_NAME}")
 
+    async def _encode_async(self, texts: List[str]) -> List[List[float]]:
+        """Encode texts to vectors using Qwen API."""
+        embeddings = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for text in texts:
+                try:
+                    response = await client.post(
+                        f"{QWEN_API_URL}/embeddings",
+                        headers={
+                            "Authorization": f"Bearer {QWEN_API_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": self._embedding_model,
+                            "input": text
+                        }
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    embedding = data["data"][0]["embedding"]
+                    embeddings.append(embedding)
+                except Exception as e:
+                    logger.error(f"[KnowledgeBase] Embedding failed: {e}")
+                    # 返回空向量作为fallback
+                    embeddings.append([0.0] * VECTOR_DIMENSION)
+        return embeddings
+
     def _encode(self, texts: List[str]) -> List[List[float]]:
-        """Encode texts to vectors."""
-        if self.encoder is None:
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2', local_files_only=True)
-        return self.encoder.encode(texts, convert_to_numpy=True).tolist()
+        """Encode texts to vectors from sync code."""
+        import asyncio
+        import threading
+
+        try:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop and running_loop.is_running():
+                result = {}
+                error = {}
+
+                def run_in_thread():
+                    try:
+                        result["value"] = asyncio.run(self._encode_async(texts))
+                    except Exception as exc:
+                        error["value"] = exc
+
+                thread = threading.Thread(target=run_in_thread)
+                thread.start()
+                thread.join()
+
+                if error:
+                    raise error["value"]
+                return result["value"]
+
+            return asyncio.run(self._encode_async(texts))
+        except Exception as e:
+            logger.error(f"[KnowledgeBase] _encode failed: {e}")
+            return [[0.0] * VECTOR_DIMENSION for _ in texts]
 
     def add_document(self, doc_id: str, content: str, metadata: dict = None):
         """Add a document to the knowledge base.

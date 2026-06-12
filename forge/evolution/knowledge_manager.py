@@ -16,8 +16,8 @@ from typing import Dict, Any, List, Optional
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from sentence_transformers import SentenceTransformer
 
-# 强制使用本地缓存
-os.environ["HF_HUB_OFFLINE"] = "1"
+# 使用 HuggingFace 镜像（国内网络）
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from forge.knowledge.config import MILVUS_HOST, MILVUS_PORT
 from .config import get_evolution_config
@@ -57,12 +57,9 @@ class QualityKnowledgeManager:
             )
             logger.info(f"[QualityKB] Connected to Milvus: {MILVUS_HOST}:{MILVUS_PORT}")
 
-            # 初始化 encoder
-            self.encoder = SentenceTransformer(
-                'all-MiniLM-L6-v2',
-                local_files_only=True
-            )
-            logger.info("[QualityKB] Encoder loaded: all-MiniLM-L6-v2")
+            # 初始化 encoder (BGE-large-zh-v1.5, best for Chinese)
+            self.encoder = SentenceTransformer('BAAI/bge-large-zh-v1.5')
+            logger.info("[QualityKB] Encoder loaded: BAAI/bge-large-zh-v1.5")
 
             # 创建 collection（如果不存在）
             collection_name = self.config.QUALITY_CASES_COLLECTION
@@ -105,7 +102,7 @@ class QualityKnowledgeManager:
     def _encode(self, texts: List[str]) -> List[List[float]]:
         """编码文本为向量。"""
         if self.encoder is None:
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2', local_files_only=True)
+            self.encoder = SentenceTransformer('BAAI/bge-large-zh-v1.5')
         return self.encoder.encode(texts, convert_to_numpy=True).tolist()
 
     # ============================================================================

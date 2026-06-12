@@ -1,0 +1,63 @@
+# Forge Gateway API Dockerfile
+# 基于 Python 3.11 slim 镜像（优化版，减少构建时间）
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安装系统依赖（添加 PostgreSQL 客户端库）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libpq-dev \
+    libasound2t64 \
+    libatk-bridge2.0-0t64 \
+    libatk1.0-0t64 \
+    libatspi2.0-0t64 \
+    libcairo2 \
+    libcups2t64 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libglib2.0-0t64 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libexpat1 \
+    fonts-liberation \
+    fontconfig \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装 Python 依赖（使用 --only-binary 避免编译）
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt 2>/dev/null || \
+    pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir \
+        uvicorn[standard] fastapi httpx jinja2 \
+        "langgraph-cli[inmem]" \
+        "psycopg[binary]" psycopg-pool \
+        langgraph-checkpoint-postgres \
+        playwright-stealth \
+        pymilvus \
+    && python -m playwright install chromium
+
+# 复制项目代码
+COPY forge/ ./forge/
+COPY langgraph.json .
+COPY .env .
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动 Gateway API
+CMD ["uvicorn", "forge.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]

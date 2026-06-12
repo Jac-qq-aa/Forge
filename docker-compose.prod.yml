@@ -1,0 +1,127 @@
+# Forge 生产环境部署配置
+# 使用方式: docker compose -f docker-compose.prod.yml up -d
+# 注意: Milvus 服务需要单独启动或已存在
+# 端口: Gateway=13324, LangGraph=13325, Web=13326
+
+services:
+  # ============================================
+  # Redis - 会话缓存
+  # ============================================
+  redis:
+    container_name: forge-redis
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/redis:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - forge-network
+      - milvus
+
+  # ============================================
+  # LangGraph Server - 运行 deep_mode_agent
+  # ============================================
+  langgraph:
+    container_name: forge-langgraph
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "13325:2024"
+    environment:
+      - LANGGRAPH_HOST=0.0.0.0
+      - LANGGRAPH_PORT=2024
+    volumes:
+      - ./forge:/app/forge
+      - ./.env:/app/.env
+      - ./.langgraph_api:/app/.langgraph_api
+    command: langgraph dev --host 0.0.0.0 --port 2024
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2024/ok"]
+      interval: 30s
+      start_period: 60s
+      timeout: 10s
+      retries: 3
+    networks:
+      - forge-network
+      - milvus
+
+  # ============================================
+  # Gateway API - FastAPI 入口
+  # ============================================
+  gateway:
+    container_name: forge-gateway
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "13324:8000"
+    environment:
+      - LANGGRAPH_SERVER_URL=http://langgraph:2024
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MILVUS_HOST=standalone
+      - MILVUS_PORT=19530
+    volumes:
+      - ./forge:/app/forge
+      - ./.env:/app/.env
+    command: uvicorn forge.gateway.app:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - langgraph
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - forge-network
+      - milvus
+
+  # ============================================
+  # Web UI - 前端界面
+  # ============================================
+  web:
+    container_name: forge-web
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "13326:8000"
+    environment:
+      - GATEWAY_API_URL=http://gateway:8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MILVUS_HOST=standalone
+      - MILVUS_PORT=19530
+    volumes:
+      - ./forge:/app/forge
+      - ./.env:/app/.env
+    command: uvicorn forge.web.app:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - gateway
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - forge-network
+      - milvus
+
+networks:
+  forge-network:
+    name: forge-network
+    driver: bridge
+  milvus:
+    name: milvus
+    external: true

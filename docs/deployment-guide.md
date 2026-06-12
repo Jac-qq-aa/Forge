@@ -86,7 +86,8 @@ cp .env.example .env
 ```ini
 # Qwen LLM API配置（必填）
 QWEN_API_KEY=your-api-key-here
-QWEN_MODEL=qwen3.5-plus
+QWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen3.6-plus
 
 # Milvus配置（可选，有默认值）
 MILVUS_HOST=localhost

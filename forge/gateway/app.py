@@ -1,32 +1,29 @@
-"""Gateway API - 纯透传代理，使用 LangGraph SDK 调用 LangGraph Server。
+"""Gateway API - 使用 LangGraph SDK 调用 LangGraph Server。
 
 架构：
 ┌─────────────────┐    ┌─────────────────────────────┐
 │   Gateway API   │───▶│   LangGraph Server (2024)   │
 │   (FastAPI)     │SDK │   deep_mode_agent           │
 │   (8001)        │    │   Thread 视角观察            │
-│   纯透传代理     │    │   LangSmith / Studio        │
+│   Trace stitching│    │   LangSmith / Studio        │
 └─────────────────┘    └─────────────────────────────┘
 
-简化设计：
-- Gateway 不创建 trace，不存储 headers
-- 直接透传 SDK 调用，只认 thread_id
-- 观察视角：LangSmith Threads 或 LangGraph Studio
-
-Thread 视角：
-- create_session、outline_action、finalize 产生独立 Trace
-- 通过 Thread 视角按时间串联完整业务流
-- 在 LangSmith Threads 列表搜索 thread_id
-- 或在 LangGraph Studio 输入 thread_id
+Trace 设计：
+- Gateway 创建 deep_mode_session parent trace
+- LangSmith headers 存在 LangGraph thread state 中
+- 后续 resume 使用 parent headers 创建 child trace，并传给 LangGraph Server
 """
 
+from contextlib import asynccontextmanager
 import logging
-from typing import Dict, Any, Optional
+from typing import AsyncIterator, Dict, Any, Optional, Tuple
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import langsmith as ls
 from langgraph_sdk import get_client
 from langgraph_sdk.schema import Command
 
@@ -35,11 +32,67 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# Scraper Helper
+# ============================================================================
+
+async def _fetch_article_content(url: str) -> Dict[str, str]:
+    """根据 URL 抓取文章内容。
+
+    Args:
+        url: 文章 URL
+
+    Returns:
+        dict with title, text
+    """
+    if not url:
+        return {"title": "", "text": ""}
+
+    # 判断平台
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+
+    if "zhihu.com" in domain:
+        from forge.tools.zhihu_scraper import ZhihuScraper
+        try:
+            scraper = ZhihuScraper(headless=True)
+            async with scraper:
+                result = await scraper.scrape_article(url)
+                return {
+                    "title": result.get("title", ""),
+                    "text": result.get("text", ""),
+                }
+        except Exception as e:
+            logger.warning(f"[Gateway] Zhihu scrape failed: {e}")
+            return {"title": "", "text": ""}
+
+    elif "mp.weixin.qq.com" in domain or "weixin.qq.com" in domain:
+        from forge.tools.wechat_scraper import WechatScraper
+        try:
+            scraper = WechatScraper(headless=True)
+            async with scraper:
+                result = await scraper.scrape_article(url)
+                return {
+                    "title": result.get("title", ""),
+                    "text": result.get("text", ""),
+                }
+        except Exception as e:
+            logger.warning(f"[Gateway] WeChat scrape failed: {e}")
+            return {"title": "", "text": ""}
+
+    else:
+        logger.warning(f"[Gateway] Unknown platform for URL: {url}")
+        return {"title": "", "text": ""}
+
 # ============================================================================
 # LangGraph SDK Client
 # ============================================================================
 
-LANGGRAPH_SERVER_URL = "http://localhost:2024"
+import os
+LANGGRAPH_SERVER_URL = os.getenv("LANGGRAPH_SERVER_URL", "http://langgraph:2024")
+DEEP_MODE_AGENT_ID = os.getenv("DEEP_MODE_AGENT_ID", "deep_mode_agent")
+GATEWAY_TRACE_HEADERS_KEY = "gateway_trace_headers"
 _client = None
 
 
@@ -50,6 +103,84 @@ def get_langgraph_client():
         _client = get_client(url=LANGGRAPH_SERVER_URL)
         logger.info(f"[Gateway] LangGraph SDK client initialized: {LANGGRAPH_SERVER_URL}")
     return _client
+
+
+# ============================================================================
+# LangSmith Trace Stitching
+# ============================================================================
+
+async def _save_trace_headers(client, thread_id: str, headers: Dict[str, str]) -> None:
+    """Persist parent trace headers in LangGraph thread state."""
+    if not headers:
+        return
+
+    try:
+        await client.threads.update_state(
+            thread_id,
+            {GATEWAY_TRACE_HEADERS_KEY: dict(headers)},
+            headers=headers,
+        )
+        logger.info(f"[GatewayTrace] Saved trace headers for thread: {thread_id}")
+    except Exception as e:
+        logger.warning(f"[GatewayTrace] Failed to save trace headers for {thread_id}: {e}")
+
+
+async def _load_trace_headers(client, thread_id: str) -> Dict[str, str]:
+    """Load parent trace headers from LangGraph thread state."""
+    try:
+        state = await client.threads.get_state(thread_id)
+        values = state.get("values", {})
+        headers = values.get(GATEWAY_TRACE_HEADERS_KEY) or {}
+        if isinstance(headers, dict):
+            return {str(k): str(v) for k, v in headers.items()}
+    except Exception as e:
+        logger.warning(f"[GatewayTrace] Failed to load trace headers for {thread_id}: {e}")
+
+    return {}
+
+
+@asynccontextmanager
+async def _child_trace(
+    name: str,
+    parent_headers: Dict[str, str],
+    *,
+    thread_id: str,
+    inputs: Dict[str, Any],
+) -> AsyncIterator[Tuple[Optional[Any], Optional[Dict[str, str]]]]:
+    """Create a Gateway child span and return headers for the remote LangGraph run."""
+    if not parent_headers:
+        yield None, None
+        return
+
+    async with ls.trace(
+        name,
+        run_type="chain",
+        inputs=inputs,
+        parent=parent_headers,
+        metadata={"thread_id": thread_id, "component": "forge-gateway"},
+    ) as run:
+        yield run, run.to_headers()
+
+
+def _summarize_result(result: Any) -> Dict[str, Any]:
+    """Keep Gateway trace outputs small and useful."""
+    if not isinstance(result, dict):
+        return {"status": "completed", "result_type": type(result).__name__}
+
+    if "__interrupt__" in result:
+        interrupt_data = result["__interrupt__"][0]
+        interrupt_value = interrupt_data.get("value", {})
+        return {
+            "status": "interrupted",
+            "interrupt_type": interrupt_value.get("type", ""),
+            "stage": interrupt_value.get("stage", ""),
+        }
+
+    return {
+        "status": "completed",
+        "stage": result.get("stage", ""),
+        "has_final_draft": bool(result.get("final_draft")),
+    }
 
 
 # ============================================================================
@@ -85,7 +216,7 @@ class UpdateOutlineRequest(BaseModel):
 
 app = FastAPI(
     title="Forge Gateway API",
-    description="Gateway for LangGraph Server - 纯透传代理，Thread 视角观察",
+    description="Gateway for LangGraph Server with LangSmith trace stitching",
 )
 
 app.add_middleware(
@@ -98,7 +229,7 @@ app.add_middleware(
 
 
 # ============================================================================
-# API Routes - 纯透传
+# API Routes
 # ============================================================================
 
 @app.get("/")
@@ -123,7 +254,7 @@ async def health():
 
 @app.post("/api/deep_mode/create_session")
 async def create_session(request: CreateSessionRequest):
-    """创建深度生成会话 - 纯透传。"""
+    """创建深度生成会话。"""
     client = get_langgraph_client()
 
     try:
@@ -132,16 +263,50 @@ async def create_session(request: CreateSessionRequest):
         thread_id = thread["thread_id"]
         logger.info(f"[Gateway] Thread created: {thread_id}")
 
-        # 运行到第一个 interrupt
-        result = await client.runs.wait(
-            thread_id,
-            "deep_mode_agent",
-            input={
+        # 如果 source_article.text 为空，自动抓取内容
+        source_article = dict(request.source_article)
+        if not source_article.get("text"):
+            logger.info(f"[Gateway] Article text is empty, fetching from URL: {request.article_id}")
+            fetched = await _fetch_article_content(request.article_id)
+            if fetched.get("text"):
+                source_article["text"] = fetched["text"]
+                if not source_article.get("title") and fetched.get("title"):
+                    source_article["title"] = fetched["title"]
+                logger.info(f"[Gateway] Fetched article content: {len(fetched['text'])} chars")
+            else:
+                logger.warning(f"[Gateway] Failed to fetch article content from {request.article_id}")
+
+        run_input = {
+            "session_id": thread_id,
+            "source_article": source_article,
+            "user_input": request.user_input or "",
+        }
+
+        # 创建 parent trace，并把 headers 传给 LangGraph Server 的第一次 run
+        async with ls.trace(
+            "deep_mode_session",
+            run_type="chain",
+            inputs={
                 "session_id": thread_id,
-                "source_article": request.source_article,
+                "article_id": request.article_id,
                 "user_input": request.user_input or "",
             },
-        )
+            metadata={
+                "thread_id": thread_id,
+                "article_id": request.article_id,
+                "component": "forge-gateway",
+            },
+        ) as trace_run:
+            trace_headers = trace_run.to_headers()
+            result = await client.runs.wait(
+                thread_id,
+                DEEP_MODE_AGENT_ID,
+                input=run_input,
+                headers=trace_headers,
+            )
+            trace_run.end(outputs=_summarize_result(result))
+
+        await _save_trace_headers(client, thread_id, trace_headers)
 
         # 检查是否遇到 interrupt
         if "__interrupt__" in result:
@@ -171,7 +336,7 @@ async def create_session(request: CreateSessionRequest):
 
 @app.post("/api/deep_mode/outline_action")
 async def outline_action(request: OutlineActionRequest):
-    """大纲操作 - 纯透传。"""
+    """大纲操作。"""
     client = get_langgraph_client()
     thread_id = request.session_id
 
@@ -184,12 +349,24 @@ async def outline_action(request: OutlineActionRequest):
         else:
             raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}")
 
-        # Resume 执行
-        result = await client.runs.wait(
-            thread_id,
-            "deep_mode_agent",
-            command=Command(resume=resume_value),
-        )
+        parent_headers = await _load_trace_headers(client, thread_id)
+        async with _child_trace(
+            "outline_action",
+            parent_headers,
+            thread_id=thread_id,
+            inputs={
+                "action": request.action,
+                "has_modification": bool(request.modification),
+            },
+        ) as (trace_run, trace_headers):
+            result = await client.runs.wait(
+                thread_id,
+                DEEP_MODE_AGENT_ID,
+                command=Command(resume=resume_value),
+                headers=trace_headers,
+            )
+            if trace_run:
+                trace_run.end(outputs=_summarize_result(result))
 
         # 检查是否遇到下一个 interrupt
         if "__interrupt__" in result:
@@ -211,6 +388,7 @@ async def outline_action(request: OutlineActionRequest):
                     "stage": "waiting_outline",
                     "outline": interrupt_value.get("outline", ""),
                     "outline_version": interrupt_value.get("outline_version", 1),
+                    "outline_thinking": interrupt_value.get("outline_thinking", ""),
                     "hil_status": "interrupted",
                     "interrupt_type": "outline_approval",
                 }
@@ -235,19 +413,32 @@ async def update_outline(request: UpdateOutlineRequest):
     thread_id = request.session_id
 
     try:
+        parent_headers = await _load_trace_headers(client, thread_id)
         state = await client.threads.get_state(thread_id)
         values = state.get("values", {})
         outline_version = request.outline_version
         if outline_version is None:
             outline_version = values.get("outline_version", 0) + 1
 
-        await client.threads.update_state(
-            thread_id,
-            {
-                "outline": request.outline,
+        async with _child_trace(
+            "update_outline",
+            parent_headers,
+            thread_id=thread_id,
+            inputs={
+                "outline_length": len(request.outline),
                 "outline_version": outline_version,
             },
-        )
+        ) as (trace_run, trace_headers):
+            await client.threads.update_state(
+                thread_id,
+                {
+                    "outline": request.outline,
+                    "outline_version": outline_version,
+                },
+                headers=trace_headers,
+            )
+            if trace_run:
+                trace_run.end(outputs={"status": "updated", "outline_version": outline_version})
 
         return {
             "session_id": thread_id,
@@ -263,20 +454,34 @@ async def update_outline(request: UpdateOutlineRequest):
 
 @app.post("/api/deep_mode/finalize")
 async def finalize_session(request: FinalizeRequest):
-    """定稿会话 - 纯透传。"""
+    """定稿会话。"""
     client = get_langgraph_client()
     thread_id = request.session_id
 
     try:
-        if request.content:
-            await client.threads.update_state(thread_id, {"current_draft": request.content})
+        parent_headers = await _load_trace_headers(client, thread_id)
 
-        # Resume 执行 finalize
-        result = await client.runs.wait(
-            thread_id,
-            "deep_mode_agent",
-            command=Command(resume={"decision": "finalize"}),
-        )
+        if request.content:
+            await client.threads.update_state(
+                thread_id,
+                {"current_draft": request.content},
+                headers=parent_headers or None,
+            )
+
+        async with _child_trace(
+            "finalize",
+            parent_headers,
+            thread_id=thread_id,
+            inputs={"has_user_content": bool(request.content)},
+        ) as (trace_run, trace_headers):
+            result = await client.runs.wait(
+                thread_id,
+                DEEP_MODE_AGENT_ID,
+                command=Command(resume={"decision": "finalize"}),
+                headers=trace_headers,
+            )
+            if trace_run:
+                trace_run.end(outputs=_summarize_result(result))
 
         return {
             "session_id": thread_id,
@@ -313,12 +518,12 @@ async def get_session(session_id: str):
 
 
 # ============================================================================
-# WebSocket for Tuning - 纯透传
+# WebSocket for Tuning
 # ============================================================================
 
 @app.websocket("/ws/deep_mode/{session_id}")
 async def websocket_tuning(websocket: WebSocket, session_id: str):
-    """WebSocket 用于实时微调交互 - 纯透传。"""
+    """WebSocket 用于实时微调交互。"""
     await websocket.accept()
     logger.info(f"[WebSocket] Connection established: {session_id}")
 
@@ -344,12 +549,21 @@ async def websocket_tuning(websocket: WebSocket, session_id: str):
                 user_message = data.get("content", "")
                 logger.info(f"[WebSocket] Tuning request: {user_message[:50]}...")
 
-                # Resume tuning
-                result = await client.runs.wait(
-                    session_id,
-                    "deep_mode_agent",
-                    command=Command(resume={"decision": "tuning", "tuning_request": user_message}),
-                )
+                parent_headers = await _load_trace_headers(client, session_id)
+                async with _child_trace(
+                    "tuning_message",
+                    parent_headers,
+                    thread_id=session_id,
+                    inputs={"message_length": len(user_message)},
+                ) as (trace_run, trace_headers):
+                    result = await client.runs.wait(
+                        session_id,
+                        DEEP_MODE_AGENT_ID,
+                        command=Command(resume={"decision": "tuning", "tuning_request": user_message}),
+                        headers=trace_headers,
+                    )
+                    if trace_run:
+                        trace_run.end(outputs=_summarize_result(result))
 
                 # 检查是否回到 interrupt
                 if "__interrupt__" in result:
@@ -367,15 +581,29 @@ async def websocket_tuning(websocket: WebSocket, session_id: str):
 
             elif message_type == "finalize":
                 content = data.get("content")
+                parent_headers = await _load_trace_headers(client, session_id)
 
                 if content:
-                    await client.threads.update_state(session_id, {"current_draft": content})
+                    await client.threads.update_state(
+                        session_id,
+                        {"current_draft": content},
+                        headers=parent_headers or None,
+                    )
 
-                result = await client.runs.wait(
-                    session_id,
-                    "deep_mode_agent",
-                    command=Command(resume={"decision": "finalize"}),
-                )
+                async with _child_trace(
+                    "finalize",
+                    parent_headers,
+                    thread_id=session_id,
+                    inputs={"has_user_content": bool(content)},
+                ) as (trace_run, trace_headers):
+                    result = await client.runs.wait(
+                        session_id,
+                        DEEP_MODE_AGENT_ID,
+                        command=Command(resume={"decision": "finalize"}),
+                        headers=trace_headers,
+                    )
+                    if trace_run:
+                        trace_run.end(outputs=_summarize_result(result))
 
                 await websocket.send_json({
                     "type": "finalized",

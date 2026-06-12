@@ -12,26 +12,17 @@
 Human-in-the-Loop 暂停点：
 - generate_outline 后：等待用户确认/修改大纲
 - generate_content 后：等待用户确认定稿或继续微调
-
-LangSmith Tracing:
-- 使用 langsmith.tracing_context(parent=...) 合合 traces
-- 在第一次调用时获取 run_tree headers，存储到 checkpointer
-- resume 时从 state 获取 headers，使用 tracing_context 合合
 """
 
 import logging
-import uuid
 from typing import Dict, Any, Optional, Literal, List
 
-import langsmith as ls
-from langsmith.run_helpers import get_current_run_tree
 from langgraph.graph import StateGraph, END
 from langgraph.constants import START
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, AIMessage
 
-from forge.tools.llm_client import LLMClient, SyncLLMClient
+from forge.tools.llm_client import LLMClient
 from forge.knowledge import get_knowledge_base
 from forge.graph.checkpointer import get_checkpointer
 
@@ -50,10 +41,7 @@ class DeepModeHILState(Dict):
 
     # 会话信息
     session_id: Optional[str]
-
-    # LangSmith trace headers（用于合并 traces，持久化到 checkpointer）
-    # 格式: {"langsmith-trace": "...", "langsmith-project": "..."}
-    trace_headers: Optional[Dict[str, str]]
+    gateway_trace_headers: Optional[Dict[str, str]]
 
     # 原文章
     source_article: Optional[Dict[str, str]]
@@ -64,6 +52,7 @@ class DeepModeHILState(Dict):
     # 大纲
     outline: Optional[str]
     outline_version: Optional[int]
+    outline_thinking: Optional[str]  # 大纲修改的思考过程
 
     # 用户反馈（大纲修改）
     outline_feedback: Optional[str]
@@ -206,7 +195,23 @@ async def revise_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
     current_outline = state.get("outline", "")
     feedback = state.get("outline_feedback", "")
 
-    prompt = f"""请根据用户反馈修改大纲：
+    # DEBUG: 打印完整状态
+    logger.info(f"[Node:revise_outline] DEBUG - Full state keys: {list(state.keys())}")
+    logger.info(f"[Node:revise_outline] DEBUG - user_decision: {state.get('user_decision', 'NOT_FOUND')}")
+    logger.info(f"[Node:revise_outline] DEBUG - outline_feedback: '{feedback}'")
+    logger.info(f"[Node:revise_outline] DEBUG - feedback length: {len(feedback)}")
+    logger.info(f"[Node:revise_outline] DEBUG - Current outline preview: {current_outline[:200]}...")
+
+    # 检查 feedback 是否为空
+    if not feedback or feedback.strip() == "":
+        logger.warning("[Node:revise_outline] Empty feedback! Skipping revision, returning original outline")
+        return {
+            "outline": current_outline,
+            "outline_version": state.get("outline_version", 0) + 1,
+            "stage": "waiting_outline",
+        }
+
+    prompt = f"""请根据用户反馈修改大纲。
 
 ## 当前大纲
 {current_outline}
@@ -214,12 +219,40 @@ async def revise_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
 ## 用户反馈
 {feedback}
 
-## 修改要求
-1. 严格按照用户反馈修改
-2. 用户要求删除就删除，要求增加就增加，不限制结构变化
-3. 保持剩余内容的逻辑连贯性
+## 输出格式要求
 
-直接输出修改后的大纲：
+请按以下格式输出：
+
+<thinking>
+在此写出你的思考过程：
+1. 分析用户的需求是什么操作（删除、增加、修改、调整顺序）
+2. 确认操作会影响哪些内容
+3. 检查是否会影响其他未提及的内容
+4. 确定最终大纲的点数变化
+</thinking>
+
+<outline>
+在此输出修改后的完整大纲
+</outline>
+
+## ⚠️ 关键规则
+
+### 删除操作（最高优先级）
+当用户要求删除某一点时：
+1. **点数必须减少**：删除第N点后，大纲总点数 = 原点数 - 1
+2. **禁止添加新内容**：删除操作不需要补充新点
+3. **禁止修改其他点**：未提及的点保持原样不动
+4. **保持编号格式**：使用一、二、三、四...格式
+
+删除示例：
+- 原大纲有4点：一、二、三、四
+- 用户说"删除第三点"
+- 结果必须变成3点：一、二、四（跳过三，不补新点）
+
+### 其他操作
+- 增加：用户明确要求"添加"或"增加"时才添加新内容
+- 修改：只修改用户指定的内容，其他保持不变
+- 调整顺序：用户明确要求调整顺序时才调整
 """
 
     try:
@@ -227,10 +260,50 @@ async def revise_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
         revised = await llm.chat_with_retry(prompt)
         outline_version = state.get("outline_version", 0) + 1
 
-        logger.info(f"[Node:revise_outline] Revised: {len(revised)} chars")
+        # === 诊断日志：打印 LLM 原始输出 ===
+        logger.info(f"[Node:revise_outline] ========== LLM RAW OUTPUT START ==========")
+        logger.info(f"[Node:revise_outline] {revised}")
+        logger.info(f"[Node:revise_outline] ========== LLM RAW OUTPUT END ==========")
+        logger.info(f"[Node:revise_outline] Revised length: {len(revised)} chars")
+
+        # 解析思考过程和最终大纲
+        thinking = ""
+        final_outline = revised
+
+        # 提取 <thinking> 部分
+        import re
+        thinking_match = re.search(r'<thinking>(.*?)</thinking>', revised, re.DOTALL)
+        if thinking_match:
+            thinking = thinking_match.group(1).strip()
+            logger.info(f"[Node:revise_outline] ✓ Found <thinking> tag, length: {len(thinking)} chars")
+        else:
+            logger.warning(f"[Node:revise_outline] ✗ NO <thinking> tag found!")
+
+        # 提取 <outline> 部分
+        outline_match = re.search(r'<outline>(.*?)</outline>', revised, re.DOTALL)
+        if outline_match:
+            final_outline = outline_match.group(1).strip()
+            logger.info(f"[Node:revise_outline] ✓ Found <outline> tag, length: {len(final_outline)} chars")
+        else:
+            logger.warning(f"[Node:revise_outline] ✗ NO <outline> tag found! Using full output as outline")
+
+        # === 诊断日志：打印原大纲和新大纲对比 ===
+        original_points = len(re.findall(r'^[一二三四五六七八九十]、', current_outline, re.MULTILINE))
+        new_points = len(re.findall(r'^[一二三四五六七八九十]、', final_outline, re.MULTILINE))
+        logger.info(f"[Node:revise_outline] ========== POINT COUNT COMPARISON ==========")
+        logger.info(f"[Node:revise_outline] Original outline points: {original_points}")
+        logger.info(f"[Node:revise_outline] New outline points: {new_points}")
+        logger.info(f"[Node:revise_outline] User feedback: '{feedback}'")
+        logger.info(f"[Node:revise_outline] ========== END COMPARISON ==========")
+
+        # === 诊断日志：打印解析后的最终大纲 ===
+        logger.info(f"[Node:revise_outline] ========== FINAL OUTLINE START ==========")
+        logger.info(f"[Node:revise_outline] {final_outline}")
+        logger.info(f"[Node:revise_outline] ========== FINAL OUTLINE END ==========")
 
         return {
-            "outline": revised,
+            "outline": final_outline,
+            "outline_thinking": thinking,
             "outline_version": outline_version,
             "stage": "waiting_outline",  # 再次等待确认
         }
@@ -465,8 +538,8 @@ def build_hil_graph() -> StateGraph:
         }
     )
 
-    # 修改大纲后，重新生成并等待确认
-    graph.add_edge("revise_outline", "generate_outline")
+    # 修改大纲后，直接等待用户确认（不再重新生成）
+    graph.add_edge("revise_outline", "wait_outline_approval")
 
     # 内容生成后等待确认
     graph.add_edge("generate_content", "wait_content_approval")
@@ -521,8 +594,7 @@ async def get_hil_app():
 
     使用 AsyncPostgresSaver 替代 MemorySaver，支持：
     1. HTTP API 和 WebSocket 共享同一个 thread_id
-    2. LangSmith 显示完整流程 trace
-    3. 会话状态持久化，支持断线恢复
+    2. 会话状态持久化，支持断线恢复
 
     Checkpointer 用于保存状态，支持 interrupt 暂停和恢复。
     """
@@ -546,29 +618,6 @@ async def get_hil_app():
 # ============================================================================
 # Human-in-the-Loop API
 # ============================================================================
-
-
-async def _get_trace_headers(thread_id: str) -> Dict[str, str]:
-    """从 checkpointer 获取 trace headers.
-
-    headers 存储在 state 中，持久化到 checkpointer，确保跨请求共享。
-    用于 ls.tracing_context(parent=headers) 合合 traces。
-    """
-    app = await get_hil_app()
-    config = {"configurable": {"thread_id": thread_id}}
-
-    snapshot = await app.aget_state(config)
-
-    # LangGraph snapshot.values 是 dict，直接用 dict 访问方式
-    values = dict(snapshot.values) if snapshot.values else {}
-    trace_headers = values.get("trace_headers", {})
-
-    logger.info(f"[HIL] _get_trace_headers: thread={thread_id}, headers keys={list(trace_headers.keys())}")
-
-    return trace_headers
-
-
-@ls.traceable(name="start_generation")
 async def start_generation(
     thread_id: str,
     source_article: Dict[str, str],
@@ -599,14 +648,6 @@ async def start_generation(
     # 运行到第一个 interrupt
     result = await app.ainvoke(initial_state, config)
 
-    # 获取当前 run_tree 的 headers（用于后续 resume 合合）
-    run_tree = get_current_run_tree()
-    if run_tree:
-        trace_headers = run_tree.to_headers()
-        # 存储 headers 到 checkpointer
-        await app.aupdate_state(config, {"trace_headers": trace_headers})
-        logger.info(f"[HIL] Saved trace_headers: {list(trace_headers.keys())}")
-
     # 如果遇到 interrupt，获取 interrupt 值（使用异步方法）
     snapshot = await app.aget_state(config)
     if snapshot.next:  # 有待执行的节点 = 遇到了 interrupt
@@ -622,7 +663,6 @@ async def start_generation(
     return {"status": "completed", "result": result}
 
 
-@ls.traceable(name="approve_outline")
 async def approve_outline(
     thread_id: str,
     feedback: str = None,
@@ -637,9 +677,6 @@ async def approve_outline(
         下一步状态（继续生成内容或重新修改大纲）
     """
     app = await get_hil_app()
-
-    # 从 checkpointer state 获取已有的 trace_headers
-    trace_headers = await _get_trace_headers(thread_id)
 
     config = {
         "configurable": {"thread_id": thread_id},
@@ -657,16 +694,7 @@ async def approve_outline(
         {"user_decision": user_response["decision"], "outline_feedback": feedback or ""},
     )
 
-    # 使用 tracing_context 合合到原有 trace
-    with ls.tracing_context(parent=trace_headers):
-        result = await app.ainvoke(Command(resume=user_response), config)
-
-    # 更新 trace_headers（新的 run_tree headers）
-    run_tree = get_current_run_tree()
-    if run_tree:
-        new_headers = run_tree.to_headers()
-        await app.aupdate_state(config, {"trace_headers": new_headers})
-        logger.info(f"[HIL] Updated trace_headers after approve_outline")
+    result = await app.ainvoke(Command(resume=user_response), config)
 
     # 检查是否又遇到 interrupt（使用异步方法）
     snapshot = await app.aget_state(config)
@@ -691,7 +719,6 @@ async def approve_outline(
     return {"status": "completed", "result": result}
 
 
-@ls.traceable(name="approve_content")
 async def approve_content(
     thread_id: str,
     tuning_request: str = None,
@@ -706,9 +733,6 @@ async def approve_content(
         下一步状态（定稿或继续微调）
     """
     app = await get_hil_app()
-
-    # 从 checkpointer state 获取已有的 trace_headers
-    trace_headers = await _get_trace_headers(thread_id)
 
     config = {
         "configurable": {"thread_id": thread_id},
@@ -726,16 +750,7 @@ async def approve_content(
         {"user_decision": user_response["decision"], "tuning_request": tuning_request or ""},
     )
 
-    # 使用 tracing_context 合合到原有 trace
-    with ls.tracing_context(parent=trace_headers):
-        result = await app.ainvoke(Command(resume=user_response), config)
-
-    # 更新 trace_headers
-    run_tree = get_current_run_tree()
-    if run_tree:
-        new_headers = run_tree.to_headers()
-        await app.aupdate_state(config, {"trace_headers": new_headers})
-        logger.info(f"[HIL] Updated trace_headers after approve_content")
+    result = await app.ainvoke(Command(resume=user_response), config)
 
     # 检查是否又遇到 interrupt（使用异步方法）
     snapshot = await app.aget_state(config)

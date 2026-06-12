@@ -4,10 +4,10 @@
 Gateway API 使用 LangGraph SDK 调用 LangGraph Server。
 需要先启动 LangGraph Server: langgraph dev --port 2024
 
-简化设计：
-- Gateway 纯透传，不启用 LangSmith tracing
-- 只认 thread_id，不存储任何状态
-- 观察视角：LangSmith Threads 或 LangGraph Studio
+设计：
+- Gateway 负责 LangSmith trace stitching
+- trace headers 存在 LangGraph thread state 中
+- 业务状态仍由 LangGraph checkpointer 持久化
 """
 
 import os
@@ -17,23 +17,23 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Gateway 不启用 LangSmith tracing - 让 LangGraph Server 自然产生独立 trace
 from dotenv import load_dotenv
 load_dotenv()
 
-print('[Gateway] LangSmith tracing disabled for Gateway (纯透传代理)')
-print('[Gateway] View traces in LangSmith Threads or LangGraph Studio by thread_id')
+print('[Gateway] LangSmith trace stitching enabled in Gateway')
+print('[Gateway] View stitched traces in LangSmith, or inspect thread state by thread_id')
 
 import uvicorn
 
 if __name__ == "__main__":
-    print('[Gateway] Starting Gateway API on port 8001...')
-    print('[Gateway] LangGraph Server should be running on port 2024')
-    print('[Gateway] Start LangGraph Server: langgraph dev --port 2024')
+    gateway_port = int(os.environ["GATEWAY_PORT"])
+    print(f'[Gateway] Starting Gateway API on port {gateway_port}...')
+    print('[Gateway] LangGraph Server should be reachable via LANGGRAPH_API_URL')
+    print('[Gateway] Start LangGraph Server before Gateway')
 
     uvicorn.run(
         "forge.gateway.app:app",
         host="0.0.0.0",
-        port=8001,
+        port=gateway_port,
         reload=False,
     )

@@ -50,19 +50,25 @@ class SessionManager:
             session_id=session_id,
         )
 
-        # PG 作为持久层必须成功
+        # PG 持久层：生产部署可能不启用独立 Postgres，此时降级为 Redis-only。
+        pg_saved = False
         try:
-            await self.pg.create_session(session_id, session_data)
-            logger.info(f"[SessionManager] Session saved to PG: {session_id}")
+            pg_saved = await self.pg.create_session(session_id, session_data)
+            if pg_saved:
+                logger.info(f"[SessionManager] Session saved to PG: {session_id}")
+            else:
+                logger.warning(f"[SessionManager] PG skipped, using Redis-only mode: {session_id}")
         except Exception as e:
-            logger.error(f"[SessionManager] PG create failed: {e}")
-            raise RuntimeError(f"Failed to create session: {e}")
+            logger.warning(f"[SessionManager] PG create failed, using Redis-only mode: {e}")
 
-        # Redis 缓存层失败可降级
+        # Redis 作为活跃会话存储必须成功，否则 Web 侧无法继续大纲确认流程。
         try:
             await self.redis.create_session(session_id, session_data)
             logger.info(f"[SessionManager] Session cached to Redis: {session_id}")
         except Exception as e:
+            logger.error(f"[SessionManager] Redis create failed: {e}")
+            if not pg_saved:
+                raise RuntimeError(f"Failed to create session in Redis/PG: {e}")
             logger.warning(f"[SessionManager] Redis unavailable, PG-only mode: {e}")
 
         logger.info(f"[SessionManager] Session created: {session_id}")
@@ -123,21 +129,21 @@ class SessionManager:
         updated_data = {**session, **updates}
         updated_data["updated_at"] = datetime.now().isoformat()
 
-        # 关键节点：PG 优先
+        # 关键节点：优先尝试 PG；PG 不可用时降级，不阻断 Web 交互。
         stage = updates.get("stage")
         if stage in (STAGE_WAITING_OUTLINE, STAGE_TUNING, STAGE_COMPLETED):
             try:
                 await self.pg.update_session(session_id, updated_data)
                 logger.info(f"[SessionManager] Session synced to PG: {session_id}")
             except Exception as e:
-                logger.error(f"[SessionManager] PG update failed: {e}")
-                raise
+                logger.warning(f"[SessionManager] PG update failed, continuing with Redis-only mode: {e}")
 
-        # Redis 缓存更新
+        # Redis 缓存更新（活跃流程依赖 Redis，失败则抛出）
         try:
             await self.redis.update_session(session_id, updates)
         except Exception as e:
-            logger.warning(f"[SessionManager] Redis update failed: {e}")
+            logger.error(f"[SessionManager] Redis update failed: {e}")
+            raise
 
         # 保存版本
         if "current_draft" in updates and updates["current_draft"]:

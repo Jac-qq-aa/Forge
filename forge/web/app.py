@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from fastapi.requests import Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from jinja2 import Environment, FileSystemLoader
+import os
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -29,8 +31,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ForgeWeb")
 
-# Gateway API URL（LangGraph Server 模式）
-GATEWAY_API_URL = "http://localhost:8001"
+# Gateway API URL（环境变量配置）
+GATEWAY_API_URL = os.getenv("GATEWAY_API_URL", "http://localhost:8001")
 
 from forge.storage.redis_client import close_redis_pool
 from forge.storage.pg_client import close_pg_pool, get_pg_pool, is_valid_uuid
@@ -91,13 +93,6 @@ from forge.deep_mode import (
 )
 from forge.deep_mode.session_manager import get_session_manager
 from forge.deep_mode.workflow import run_plan_execute
-from forge.deep_mode.websocket_handler import handle_websocket_connection
-from forge.deep_mode.graph_hil import (
-    start_generation,
-    approve_outline,
-    approve_content,
-    get_current_state,
-)
 from forge.evaluation.storage import (
     get_evaluation_result,
     get_session_probe_logs,
@@ -134,6 +129,30 @@ def render_template(name: str, context: dict) -> str:
     return template.render(**context)
 
 
+def parse_count(value) -> int:
+    """Parse numeric or Chinese count text like '1.2万' into an integer."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+
+    text = str(value).replace(",", "").replace("+", "").strip()
+    text = re.sub(r"(赞同|点赞|喜欢|人|次|个)", "", text).strip()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([万千kK]?)", text)
+    if not match:
+        return 0
+
+    number = float(match.group(1))
+    unit = match.group(2)
+    if unit == "万":
+        number *= 10000
+    elif unit == "千":
+        number *= 1000
+    elif unit in ("k", "K"):
+        number *= 1000
+    return int(number)
+
+
 # Pydantic models for API
 class SearchRequest(BaseModel):
     source: str
@@ -155,6 +174,17 @@ class ProcessManualRequest(BaseModel):
     source_platform: str = "manual"
     target_platform: str
     generate_video: bool = False
+
+
+class BloggerRequest(BaseModel):
+    blogger_id: str
+    name: str = ""
+    platform: str = "zhihu"
+
+
+class ArticleDetailRequest(BaseModel):
+    source_url: str
+    source_platform: str = "zhihu"
 
 
 class ProcessMultiRequest(BaseModel):
@@ -222,6 +252,108 @@ async def search_articles(request: SearchRequest):
     except Exception as e:
         logger.error(f"[API] Search error: {e}")
         return {"success": False, "error": str(e), "articles": []}
+
+
+# ========== 博主管理 API ==========
+
+@app.get("/api/bloggers")
+async def get_bloggers():
+    """获取关注博主列表."""
+    from forge.storage.blogger_store import load_bloggers
+    bloggers = load_bloggers()
+    return {"success": True, "bloggers": bloggers}
+
+
+@app.post("/api/bloggers")
+async def add_blogger(request: BloggerRequest):
+    """添加关注博主."""
+    from forge.storage.blogger_store import add_blogger as _add_blogger
+    try:
+        blogger = _add_blogger(request.blogger_id, request.name, request.platform)
+        return {"success": True, "blogger": blogger}
+    except Exception as e:
+        logger.error(f"[API] 添加博主失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/bloggers/{blogger_id}")
+async def remove_blogger(blogger_id: str):
+    """取消关注博主."""
+    from forge.storage.blogger_store import remove_blogger as _remove_blogger
+    try:
+        success = _remove_blogger(blogger_id)
+        if success:
+            return {"success": True}
+        else:
+            return {"success": False, "error": "博主不存在"}
+    except Exception as e:
+        logger.error(f"[API] 取消关注失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/recommend_articles")
+async def get_recommend_articles(max_per_blogger: int = 3):
+    """获取关注博主的推荐文章."""
+    from forge.storage.blogger_store import load_bloggers
+    from forge.tools.zhihu_scraper_persistent import ZhihuScraper
+
+    bloggers = load_bloggers()
+    if not bloggers:
+        return {"success": True, "articles": [], "message": "暂无关注博主，请先添加"}
+
+    all_articles = []
+    try:
+        async with ZhihuScraper() as scraper:
+            for blogger in bloggers:
+                blogger_id = blogger["id"]
+                blogger_name = blogger.get("name", blogger_id)
+                logger.info(f"[API] 获取博主文章: {blogger_name}")
+
+                try:
+                    articles = await scraper.get_user_articles(blogger_id, max_per_blogger)
+                    for article in articles:
+                        article["blogger_name"] = blogger_name
+                        article["blogger_id"] = blogger_id
+                        article["likes"] = parse_count(article.get("likes") or article.get("like_count") or article.get("vote_count") or article.get("upvote_count") or article.get("likes_text"))
+                    all_articles.extend(articles)
+                except Exception as e:
+                    logger.warning(f"[API] 获取博主 {blogger_name} 文章失败: {e}")
+                    continue
+
+        logger.info(f"[API] 推荐文章共 {len(all_articles)} 篇")
+        return {"success": True, "articles": all_articles, "count": len(all_articles)}
+
+    except Exception as e:
+        logger.error(f"[API] 推荐文章获取失败: {e}")
+        return {"success": False, "error": str(e), "articles": []}
+
+
+@app.post("/api/article_detail")
+async def get_article_detail(request: ArticleDetailRequest):
+    """按 URL 获取文章全文，用于推荐文章弹窗展开全文."""
+    try:
+        if request.source_platform != "zhihu":
+            raise HTTPException(status_code=400, detail=f"不支持的平台: {request.source_platform}")
+
+        from forge.tools.zhihu_scraper_persistent import ZhihuScraper
+        async with ZhihuScraper() as scraper:
+            article = await scraper.scrape_by_url(request.source_url)
+
+        return {
+            "success": True,
+            "article": {
+                "title": article.get("title", "无标题"),
+                "text": article.get("text") or article.get("content") or article.get("summary") or "",
+                "summary": article.get("summary", ""),
+                "source_url": article.get("source_url", request.source_url),
+                "likes": parse_count(article.get("likes") or article.get("like_count") or article.get("vote_count") or article.get("upvote_count") or article.get("likes_text")),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[API] 文章详情获取失败: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/process")
@@ -515,7 +647,6 @@ class CreateSessionRequest(BaseModel):
 class OutlineActionRequest(BaseModel):
     """大纲操作请求。"""
     session_id: str
-    run_id: str = None  # 用于 LangSmith trace 合并
     action: str  # "accept" or "modify"
     modification: str = None  # 修改意见（modify 时需要）
 
@@ -523,7 +654,6 @@ class OutlineActionRequest(BaseModel):
 class FinalizeRequest(BaseModel):
     """定稿请求。"""
     session_id: str
-    run_id: str = None  # 用于 LangSmith trace 合并
     content: str = None  # 用户编辑后的内容（可选）
 
 
@@ -910,14 +1040,14 @@ async def download_task_dir(task_dir: str):
 async def api_create_deep_mode_session(request: CreateSessionRequest):
     """创建深度生成会话 - 代理到 Gateway API（LangGraph Server 模式）。
 
-    通过 Gateway API 调用 LangGraph Server，实现单一 LangSmith Trace。
+    通过 Gateway API 调用 LangGraph Server，使用 thread_id 持久化 interrupt 状态。
     """
     logger.info(f"[API] Create deep mode session: article_id={request.article_id}")
 
     session_manager = get_session_manager()
 
     # 先调用 Gateway API，获取 LangGraph thread_id
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         try:
             resp = await client.post(
                 f"{GATEWAY_API_URL}/api/deep_mode/create_session",
@@ -1064,13 +1194,12 @@ async def api_outline_action(request: OutlineActionRequest):
     session_manager = get_session_manager()
 
     # 调用 Gateway API
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         try:
             resp = await client.post(
                 f"{GATEWAY_API_URL}/api/deep_mode/outline_action",
                 json={
                     "session_id": request.session_id,
-                    "run_id": request.run_id,  # 用于 trace 合并
                     "action": request.action,
                     "modification": request.modification or "",
                 },
@@ -1113,13 +1242,12 @@ async def api_finalize_session(request: FinalizeRequest):
     session_manager = get_session_manager()
 
     # 调用 Gateway API
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         try:
             resp = await client.post(
                 f"{GATEWAY_API_URL}/api/deep_mode/finalize",
                 json={
                     "session_id": request.session_id,
-                    "run_id": request.run_id,  # 用于 trace 合并
                     "content": request.content or "",
                 },
             )
@@ -1433,8 +1561,16 @@ async def deep_mode_websocket(websocket: WebSocket, session_id: str):
     await websocket.accept()
     logger.info(f"[WebSocket] Client connected: {session_id}")
 
-    # 连接 Gateway API WebSocket
-    gateway_ws_url = f"ws://localhost:8001/ws/deep_mode/{session_id}"
+    # 连接 Gateway API WebSocket。
+    # 注意：容器内不能写死 localhost:8001；HTTP 代理使用 GATEWAY_API_URL=http://forge-gateway:8000，
+    # WebSocket 也应从同一个配置派生，否则会连接到 web 容器自身导致 Connection refused。
+    if GATEWAY_API_URL.startswith("https://"):
+        gateway_ws_base = "wss://" + GATEWAY_API_URL[len("https://"):]
+    elif GATEWAY_API_URL.startswith("http://"):
+        gateway_ws_base = "ws://" + GATEWAY_API_URL[len("http://"):]
+    else:
+        gateway_ws_base = GATEWAY_API_URL
+    gateway_ws_url = f"{gateway_ws_base.rstrip('/')}/ws/deep_mode/{session_id}"
 
     try:
         # 使用 websockets 库连接 Gateway

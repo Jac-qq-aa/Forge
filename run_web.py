@@ -2,7 +2,7 @@
 """Run the Forge Web application.
 
 前端 Web 界面，代理到 Gateway API。
-不启用 LangSmith tracing，只让 LangGraph Server（2024）产生 trace。
+LangSmith trace stitching 由 Gateway API 处理。
 """
 
 import os
@@ -14,13 +14,12 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-# 加载环境变量（但不启用 tracing）
+# 加载环境变量
 from dotenv import load_dotenv
 load_dotenv()
 
-# 前端不启用 LangSmith tracing - 只让 LangGraph Server 产生 trace
-# 所有 HITL 交互通过 Gateway API -> LangGraph Server，trace 在 Server 内统一管理
-print('[Web] LangSmith tracing disabled for frontend (only LangGraph Server traces)')
+# 前端不创建 LangSmith spans；HITL 交互通过 Gateway API 做 trace stitching
+print('[Web] LangSmith tracing handled by Gateway API')
 
 import uvicorn
 
@@ -75,10 +74,12 @@ if __name__ == "__main__":
     start_evaluation_worker()
 
     try:
+        web_port = int(os.environ["WEB_PORT"])
+        print(f'[Web] Starting Web UI on port {web_port}...')
         uvicorn.run(
             "forge.web.app:app",
             host="0.0.0.0",
-            port=8000,
+            port=web_port,
             reload=False,
         )
     finally:

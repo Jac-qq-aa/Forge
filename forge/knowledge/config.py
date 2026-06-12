@@ -10,8 +10,8 @@ MILVUS_PORT = "19530"
 # Collection name
 COLLECTION_NAME = "ruibo_knowledge"
 
-# Vector dimensions (all-MiniLM-L6-v2 produces 384-dimensional vectors)
-VECTOR_DIMENSION = 384
+# Vector dimensions (BGE-large-zh-v1.5 produces 1024-dimensional vectors)
+VECTOR_DIMENSION = 1024
 
 # Knowledge categories
 CATEGORIES = [

@@ -125,42 +125,30 @@ async def rag_search_node(state: DeepModeGraphState) -> Dict[str, Any]:
 
 
 async def generate_outline_node(state: DeepModeGraphState) -> Dict[str, Any]:
-    """节点: 生成大纲。
+    """节点: 生成大纲（使用分段生成器的段落级大纲）。
 
     LangSmith 显示名称: generate_outline
     """
-    logger.info("[Node:generate_outline] Generating outline...")
+    logger.info("[Node:generate_outline] Generating paragraph-level outline...")
 
     source_article = state.get("source_article", {})
     user_input = state.get("user_input", "")
     rag_context = state.get("rag_context", "")
+    target_platform = source_article.get("platform", "zhihu")
 
-    prompt = f"""请根据以下信息生成文章大纲：
-
-## 原文章内容
-标题：{source_article.get('title', '')}
-内容：{source_article.get('text', '')[:1500]}
-
-## 用户改写需求
-{user_input}
-
-## 知识库素材（可自然融入）
-{rag_context if rag_context else "无"}
-
-## 大纲要求
-1. 保留原文核心观点
-2. 结构：一、二、三、四（带二级标题）
-3. 根据用户需求调整风格和侧重点
-
-直接输出大纲：
-"""
+    # 调用 workflow.py 的分段大纲生成
+    from forge.deep_mode.workflow import generate_outline
 
     try:
-        llm = LLMClient()
-        outline = await llm.chat_with_retry(prompt)
+        outline = await generate_outline(
+            source_article=source_article,
+            user_input=user_input,
+            rag_context=rag_context,
+            target_platform=target_platform,
+        )
         outline_version = state.get("outline_version", 0) + 1
 
-        logger.info(f"[Node:generate_outline] Generated: {len(outline)} chars, version={outline_version}")
+        logger.info(f"[Node:generate_outline] Generated paragraph outline: {len(outline)} chars, version={outline_version}")
 
         return {
             "outline": outline,
@@ -221,80 +209,34 @@ async def revise_outline_node(state: DeepModeGraphState) -> Dict[str, Any]:
 
 
 async def generate_content_node(state: DeepModeGraphState) -> Dict[str, Any]:
-    """节点: 根据大纲生成全文。
+    """节点: 根据大纲生成全文（使用分段生成）。
 
     LangSmith 显示名称: generate_content
 
-    使用动态 Prompt 模板 + 高质量案例参考。
+    默认使用分段生成（段落级大纲 → 逐段生成）。
     """
-    logger.info("[Node:generate_content] Generating content with dynamic template...")
+    logger.info("[Node:generate_content] Generating content with paragraph-by-paragraph...")
 
     outline = state.get("outline", "")
     source_article = state.get("source_article", {})
     rag_context = state.get("rag_context", "")
+    user_input = state.get("user_input", "")
+    session_id = state.get("session_id", "")
+    target_platform = source_article.get("platform", "zhihu")
 
-    # 初始化变量（降级时的默认值）
-    template = None
-    quality_context = "无参考案例"
-    prompt_manager = None
+    # 调用 workflow.py 的分段生成
+    from forge.deep_mode.workflow import generate_content
 
-    # 获取动态模板和高质量案例参考
     try:
-        from forge.evolution import (
-            get_prompt_manager,
-            get_quality_knowledge_manager,
-            ensure_default_templates,
+        draft, template_id = await generate_content(
+            outline=outline,
+            source_article=source_article,
+            rag_context=rag_context,
+            return_template_id=True,
+            user_input=user_input,
+            target_platform=target_platform,
+            session_id=session_id,
         )
-
-        # 确保默认模板已初始化
-        await ensure_default_templates()
-
-        # 获取当前激活的模板
-        prompt_manager = get_prompt_manager()
-        template = await prompt_manager.get_active_template("deep_content_generator")
-
-        # 获取高质量案例参考
-        quality_kb = get_quality_knowledge_manager()
-        platform = source_article.get("platform", "zhihu")
-        quality_context = await quality_kb.get_context_for_generation(outline, platform)
-
-    except Exception as e:
-        # 降级：使用硬编码模板
-        logger.warning(f"[Node:generate_content] Evolution system unavailable: {e}")
-        from forge.evolution import get_fallback_template, skip_quality_context
-
-        template = get_fallback_template("deep_content_generator")
-        quality_context = skip_quality_context()
-
-    # 确保 template 存在
-    if template is None:
-        from forge.evolution import get_fallback_template
-        template = get_fallback_template("deep_content_generator")
-
-    # 组装 prompt
-    system_prompt = template.get("system_prompt", "")
-    user_prompt_template = template.get("user_prompt_template", "")
-
-    # 安全格式化
-    variables = {
-        "outline": outline,
-        "title": source_article.get("title", ""),
-        "raw_content": source_article.get("text", "")[:2000],
-        "rag_context": rag_context or "无",
-        "quality_context": quality_context,
-    }
-
-    if prompt_manager:
-        user_prompt = prompt_manager.safe_format_template(user_prompt_template, variables)
-    else:
-        safe_vars = {k: v or "无" for k, v in variables.items()}
-        user_prompt = user_prompt_template.format(**safe_vars)
-
-    # 调用 LLM
-    try:
-        llm = LLMClient()
-        draft = await llm.chat_with_retry(user_prompt, system_prompt)
-        template_id = template.get("id")
 
         logger.info(f"[Node:generate_content] Generated: {len(draft)} chars, template={template_id}")
 
@@ -303,7 +245,7 @@ async def generate_content_node(state: DeepModeGraphState) -> Dict[str, Any]:
             "current_draft": draft,
             "template_id": template_id,
             "stage": "tuning",
-            "tuning_history": [],  # 初始化微调历史
+            "tuning_history": [],
         }
     except Exception as e:
         logger.error(f"[Node:generate_content] Failed: {e}")

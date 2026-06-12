@@ -34,19 +34,33 @@ def is_valid_uuid(session_id: str) -> bool:
 
 
 async def get_pg_pool() -> asyncpg.Pool:
-    """获取 PostgreSQL 连接池（单例）。"""
+    """获取 PostgreSQL 连接池（单例）。
+
+    如果PostgreSQL未运行，返回None（禁用PG存储）。
+    """
     global _pg_pool
     if _pg_pool is None:
-        _pg_pool = await asyncpg.create_pool(
-            host=PG_HOST,
-            port=PG_PORT,
-            user=PG_USER,
-            password=PG_PASSWORD,
-            database=PG_DATABASE,
-            min_size=2,
-            max_size=10,
-        )
-        logger.info(f"[PG] Connection pool created: {PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+        import asyncio
+        try:
+            _pg_pool = await asyncio.wait_for(
+                asyncpg.create_pool(
+                    host=PG_HOST,
+                    port=PG_PORT,
+                    user=PG_USER,
+                    password=PG_PASSWORD,
+                    database=PG_DATABASE,
+                    min_size=2,
+                    max_size=10,
+                ),
+                timeout=5.0
+            )
+            logger.info(f"[PG] Connection pool created: {PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[PG] Connection pool creation timeout (5s), PostgreSQL may not be running")
+            _pg_pool = None
+        except Exception as e:
+            logger.warning(f"[PG] Connection pool creation failed: {e}")
+            _pg_pool = None
     return _pg_pool
 
 

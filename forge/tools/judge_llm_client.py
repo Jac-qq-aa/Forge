@@ -3,9 +3,9 @@
 使用不同的模型进行判断，与改写模型隔离，
 避免"自己评判自己"的问题。
 
-模型职责分离（使用同一 API Key，不同模型）：
-- 改写模型: qwen-plus (Editor, Humanizer_Editor)
-- 判断模型: qwen-max (AI_Detector) - 更强的模型
+模型职责分离（使用同一 API Key，可配置不同模型）：
+- 改写模型: QWEN_MODEL (Editor, Humanizer_Editor)
+- 判断模型: JUDGE_MODEL (AI_Detector)
 
 使用 LangChain ChatOpenAI 以启用 LangSmith tracing。
 """
@@ -18,7 +18,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from forge.config import (
-    JUDGE_API_KEY, JUDGE_API_URL, JUDGE_MODEL,
+    JUDGE_API_KEY, JUDGE_API_URL, JUDGE_MODEL, QWEN_MODEL,
     LANGCHAIN_API_KEY, LANGCHAIN_TRACING_V2, LANGCHAIN_PROJECT
 )
 
@@ -57,7 +57,7 @@ class JudgeLLMClient:
             timeout=60.0,
         )
         logger.info(f"[JudgeLLM] ChatOpenAI initialized with model: {JUDGE_MODEL}")
-        logger.info(f"[JudgeLLM] Model isolation: judge={JUDGE_MODEL} vs rewrite=qwen-plus")
+        logger.info(f"[JudgeLLM] Model isolation: judge={JUDGE_MODEL} vs rewrite={QWEN_MODEL}")
 
     async def judge(self, prompt: str, system_prompt: str = None) -> str:
         """使用判断模型进行分析。

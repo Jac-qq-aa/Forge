@@ -24,9 +24,13 @@ reference/
 node_modules/
 forge-web-react/node_modules/
 forge-web-react/dist/
+forge-web-react/.vite/
+dist/
 
 # Environment and secrets
 .env
+.env.*
+!.env.example
 *.secret
 credentials.json
 
@@ -40,6 +44,7 @@ output/
 *.wav
 
 # Test files and artifacts
+.pytest_cache/
 test_*.mp3
 test_*.jpg
 avatar_standard.jpg
@@ -56,6 +61,7 @@ data/
 .claude/
 
 # Codex CLI runtime
+.codex
 .codex/
 
 # LangGraph runtime

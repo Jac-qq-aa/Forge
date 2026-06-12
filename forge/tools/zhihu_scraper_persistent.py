@@ -3,8 +3,10 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from playwright.async_api import async_playwright, BrowserContext
+from urllib.parse import urlparse, urlunparse
+from playwright.async_api import async_playwright, BrowserContext, Error as PlaywrightError
 from playwright_stealth import Stealth
 
 from forge.config import ZHIHU_BASE_URL, PLAYWRIGHT_TIMEOUT
@@ -14,6 +16,30 @@ BROWSER_DATA_DIR = os.path.expanduser("~/.forge/browser_data/zhihu")
 Path(BROWSER_DATA_DIR).mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
+
+
+def parse_count_text(value) -> int:
+    """Parse Zhihu-style count text like '赞同 1.2 万' into an integer."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+
+    text = str(value).replace(",", "").replace("+", "").strip()
+    text = re.sub(r"(赞同|点赞|喜欢|人|次|个)", "", text).strip()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([万千kK]?)", text)
+    if not match:
+        return 0
+
+    number = float(match.group(1))
+    unit = match.group(2)
+    if unit == "万":
+        number *= 10000
+    elif unit == "千":
+        number *= 1000
+    elif unit in ("k", "K"):
+        number *= 1000
+    return int(number)
 
 
 class ZhihuScraper:
@@ -64,6 +90,30 @@ class ZhihuScraper:
             if self.playwright:
                 await self.playwright.stop()
 
+    async def _expand_full_content(self) -> None:
+        """Click common Zhihu expand buttons before extracting rich content."""
+        expand_selectors = [
+            "button.ContentItem-more",
+            "button[class*='ContentItem-more']",
+            "button:has-text('阅读全文')",
+            "button:has-text('展开阅读全文')",
+            "button:has-text('显示全部')",
+            "button:has-text('展开')",
+            "[class*='RichContent'] button:has-text('阅读全文')",
+            "[class*='RichContent'] button:has-text('展开')",
+        ]
+        for selector in expand_selectors:
+            try:
+                buttons = self.page.locator(selector)
+                count = await buttons.count()
+                for i in range(min(count, 3)):
+                    button = buttons.nth(i)
+                    if await button.is_visible():
+                        await button.click(timeout=3000)
+                        await self.page.wait_for_timeout(1000)
+            except Exception:
+                continue
+
     async def scrape_article(self, url: str) -> dict:
         """Scrape a Zhihu article by URL."""
         logger.info(f"[ZhihuScraper] Scraping article: {url}")
@@ -75,6 +125,8 @@ class ZhihuScraper:
         if "login" in current_url or "signin" in current_url or "unhuman" in current_url:
             logger.warning(f"[ZhihuScraper] Need login/verification, redirected to: {current_url}")
             return {"title": "需要登录", "text": "请先登录知乎", "likes": 0, "source_url": url}
+
+        await self._expand_full_content()
 
         # Extract content using updated selectors
         title = ""
@@ -155,6 +207,8 @@ class ZhihuScraper:
             logger.warning(f"[ZhihuScraper] Need login, redirected to: {current_url}")
             return {"title": "需要登录", "text": "请先登录知乎", "likes": 0, "source_url": url}
 
+        await self._expand_full_content()
+
         # Extract question title
         title = ""
         title_selectors = [
@@ -181,9 +235,20 @@ class ZhihuScraper:
                 "[class*='AnswerItem']",
                 "[class*='ContentItem']",
             ]
+            content_selectors = [
+                ".RichContent-inner",
+                "[class*='RichContent-inner']",
+                "[class*='RichText']",
+                "[class*='RichContent']",
+            ]
             for sel in answer_selectors:
                 if await self.page.locator(sel).count() > 0:
-                    answer_text = await self.page.locator(sel).first.locator("[class*='RichContent'], [class*='content']").text_content() or ""
+                    answer_item = self.page.locator(sel).first
+                    for content_sel in content_selectors:
+                        if await answer_item.locator(content_sel).count() > 0:
+                            answer_text = await answer_item.locator(content_sel).first.text_content() or ""
+                            if answer_text.strip():
+                                break
                     if answer_text.strip():
                         break
         except:
@@ -224,6 +289,8 @@ class ZhihuScraper:
         if "login" in current_url or "signin" in current_url or "unhuman" in current_url:
             logger.warning(f"[ZhihuScraper] Need login, redirected to: {current_url}")
             return {"title": "需要登录", "text": "请先登录知乎", "likes": 0, "source_url": url}
+
+        await self._expand_full_content()
 
         # Extract question title (answer pages show the question)
         title = ""
@@ -338,6 +405,93 @@ class ZhihuScraper:
 
         return {"title": f"搜索: {topic}", "text": f"未找到 '{topic}' 相关内容", "likes": 0, "source_url": search_url}
 
+    async def _search_zhihu_via_tavily(self, topic: str, max_results: int = 5) -> list:
+        """Fallback: search Zhihu links via Tavily when Zhihu in-site search is blocked.
+
+        Zhihu often returns 403 for /search from server/headless environments.
+        This fallback uses external search with site:zhihu.com and returns the same
+        lightweight article-list shape expected by the Web UI.
+        """
+        logger.info(f"[ZhihuScraper] Tavily fallback search for Zhihu: {topic}")
+
+        api_key = os.getenv("TAVILY_API_KEY", "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")
+        if not api_key:
+            logger.warning("[ZhihuScraper] Tavily fallback skipped: TAVILY_API_KEY not set")
+            return []
+
+        def normalize_url(url: str) -> str:
+            if not url:
+                return ""
+            if url.startswith("//"):
+                url = "https:" + url
+            parsed = urlparse(url)
+            # Drop query/fragment to deduplicate tracking variants.
+            return urlunparse((parsed.scheme or "https", parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+        def zhihu_type(url: str) -> str:
+            if "/question/" in url:
+                return "question"
+            if "zhuanlan.zhihu.com" in url or "/p/" in url:
+                return "article"
+            return "article"
+
+        articles = []
+        seen_urls = set()
+        try:
+            from tavily import TavilyClient
+
+            client = TavilyClient(api_key=api_key)
+            # Ask for more than needed because some results are topic pages/login/noise.
+            response = client.search(
+                query=f"site:zhihu.com {topic}",
+                max_results=max(max_results * 3, 10),
+                include_raw_content=False,
+            )
+
+            for item in response.get("results", []):
+                if len(articles) >= max_results:
+                    break
+
+                url = normalize_url(item.get("url", ""))
+                if not url:
+                    continue
+
+                host = urlparse(url).netloc.lower()
+                if not (host == "www.zhihu.com" or host.endswith(".zhihu.com")):
+                    continue
+
+                # Keep concrete content pages only.
+                if not ("/question/" in url or "/answer/" in url or "zhuanlan.zhihu.com" in url or "/p/" in url):
+                    continue
+
+                # Skip non-content products.
+                if any(skip in url for skip in ["/signin", "/search", "/people/", "zvideo", "market", "kvip", "ebook"]):
+                    continue
+
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+                title = (item.get("title") or "知乎内容").strip()
+                # Tavily titles often include suffixes; keep readable length.
+                title = re.sub(r"\s+-\s+知乎$", "", title).strip()[:100] or "知乎内容"
+                summary = (item.get("content") or "").strip()[:160]
+
+                articles.append({
+                    "title": title,
+                    "summary": summary,
+                    "source_url": url,
+                    "type": zhihu_type(url),
+                    "likes": 0,
+                })
+
+            logger.info(f"[ZhihuScraper] Tavily fallback found {len(articles)} Zhihu results")
+            return articles
+
+        except Exception as e:
+            logger.error(f"[ZhihuScraper] Tavily fallback failed: {e}")
+            return []
+
     async def search_articles(self, topic: str, max_results: int = 5) -> list:
         """Search Zhihu by topic and return a list of articles for user selection.
 
@@ -350,14 +504,32 @@ class ZhihuScraper:
         """
         logger.info(f"[ZhihuScraper] Searching articles for: {topic} (max: {max_results})")
         search_url = f"{ZHIHU_BASE_URL}/search?type=content&q={topic}"
-        await self.page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
-        await self.page.wait_for_timeout(3000)
+        try:
+            response = await self.page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+        except PlaywrightError as e:
+            logger.warning(f"[ZhihuScraper] Search page navigation failed: {e}")
+            return await self._search_zhihu_via_tavily(topic, max_results)
 
-        # Check for login
+        status = response.status if response else None
+        try:
+            if not self.page.is_closed():
+                await self.page.wait_for_timeout(3000)
+        except PlaywrightError as e:
+            logger.warning(f"[ZhihuScraper] Search page closed after navigation (status={status}): {e}")
+            return await self._search_zhihu_via_tavily(topic, max_results)
+
+        if self.page.is_closed():
+            logger.warning(f"[ZhihuScraper] Search page closed unexpectedly (status={status})")
+            return await self._search_zhihu_via_tavily(topic, max_results)
+
+        # Check for login / block
         current_url = self.page.url
-        if "login" in current_url or "signin" in current_url:
-            logger.warning(f"[ZhihuScraper] Need login for search")
-            return []
+        if status in (401, 403, 429):
+            logger.warning(f"[ZhihuScraper] Search blocked by Zhihu, status={status}, url={current_url}")
+            return await self._search_zhihu_via_tavily(topic, max_results)
+        if "login" in current_url or "signin" in current_url or "unhuman" in current_url:
+            logger.warning(f"[ZhihuScraper] Need login/verification for search: {current_url}")
+            return await self._search_zhihu_via_tavily(topic, max_results)
 
         articles = []
         seen_urls = set()  # 用于去重
@@ -464,12 +636,18 @@ class ZhihuScraper:
         except Exception as e:
             logger.error(f"[ZhihuScraper] Error searching articles: {e}")
 
+        if not articles:
+            logger.info(f"[ZhihuScraper] Native Zhihu search returned 0 results, using Tavily fallback")
+            return await self._search_zhihu_via_tavily(topic, max_results)
+
         logger.info(f"[ZhihuScraper] Returning {len(articles)} articles for topic: {topic}")
         return articles
 
     async def scrape_by_url(self, url: str) -> dict:
         """Scrape content by URL (auto-detect type)."""
-        if "zhuanlan" in url or "/p/" in url:
+        if "/answer/" in url:
+            return await self.scrape_answer(url)
+        elif "zhuanlan" in url or "/p/" in url:
             return await self.scrape_article(url)
         elif "question" in url:
             return await self.scrape_question(url)
@@ -534,22 +712,47 @@ class ZhihuScraper:
                     except:
                         pass
 
-                    # Get URL - 从第一个链接获取，需要处理 // 开头的格式
+                    # Get URL - prefer concrete answer/article URLs over generic question URLs.
                     source_url = ""
                     try:
                         links = await item.locator("a").all()
+                        hrefs = []
                         for link in links:
                             href = await link.get_attribute("href")
-                            if href and ("question" in href or "zhuanlan" in href):
-                                # 处理 // 开头的 URL
-                                if href.startswith("//"):
-                                    href = f"https:{href}"
-                                elif href.startswith("/"):
-                                    href = f"https://www.zhihu.com{href}"
+                            if not href:
+                                continue
+                            if href.startswith("//"):
+                                href = f"https:{href}"
+                            elif href.startswith("/"):
+                                href = f"https://www.zhihu.com{href}"
+                            hrefs.append(href)
+
+                        for href in hrefs:
+                            if "/answer/" in href:
                                 source_url = href
                                 break
+                        if not source_url:
+                            for href in hrefs:
+                                if "zhuanlan" in href or "/p/" in href:
+                                    source_url = href
+                                    break
+                        if not source_url:
+                            for href in hrefs:
+                                if "/question/" in href:
+                                    source_url = href
+                                    break
                     except:
                         pass
+
+                    if not source_url:
+                        try:
+                            data_za_index = await item.get_attribute("data-za-index")
+                            question_link = await item.locator("a[href*='/question/']").first.get_attribute("href") or ""
+                            question_match = re.search(r"/question/(\d+)", question_link)
+                            if data_za_index and question_match:
+                                source_url = f"https://www.zhihu.com/question/{question_match.group(1)}/answer/{data_za_index}"
+                        except:
+                            pass
 
                     if not source_url:
                         continue
@@ -563,6 +766,73 @@ class ZhihuScraper:
                     except:
                         pass
 
+                    if not summary:
+                        try:
+                            if await item.locator("[class*='RichContent-inner'], [class*='RichText']").count() > 0:
+                                summary = await item.locator("[class*='RichContent-inner'], [class*='RichText']").first.text_content() or ""
+                                summary = summary.strip()[:200]
+                        except:
+                            pass
+
+                    # Get created time
+                    created_time = ""
+                    try:
+                        # Try time element first
+                        if await item.locator("time").count() > 0:
+                            created_time = await item.locator("time").first.get_attribute("datetime") or ""
+                            if not created_time:
+                                created_time = await item.locator("time").first.text_content() or ""
+                        # Try class with time/date
+                        if not created_time:
+                            time_selectors = [
+                                "[class*='Time']",
+                                "[class*='time']",
+                                "[class*='Date']",
+                                "[class*='date']",
+                                "[class*='Created']",
+                                ".ContentItem-meta span",
+                            ]
+                            for ts in time_selectors:
+                                if await item.locator(ts).count() > 0:
+                                    created_time = await item.locator(ts).first.text_content() or ""
+                                    created_time = created_time.strip()
+                                    if created_time:
+                                        break
+                    except:
+                        pass
+
+                    # Get likes count
+                    likes = 0
+                    try:
+                        vote_selectors = [
+                            "[aria-label*='赞同']",
+                            "[aria-label*='点赞']",
+                            "button[aria-label]",
+                            "[class*='VoteButton']",
+                            "[class*='LikeButton']",
+                            ".ContentItem-actions button:first-child",
+                            ".VoteButton",
+                        ]
+                        for vs in vote_selectors:
+                            elements = await item.locator(vs).all()
+                            for el in elements:
+                                # Try aria-label first
+                                aria_label = await el.get_attribute("aria-label") or ""
+                                if aria_label and ("赞同" in aria_label or "点赞" in aria_label or "like" in aria_label.lower()):
+                                    likes = parse_count_text(aria_label)
+                                    if likes:
+                                        break
+                                # Try text content as fallback
+                                if likes == 0:
+                                    vote_text = await el.text_content() or ""
+                                    likes = parse_count_text(vote_text)
+                                    if likes:
+                                        break
+                            if likes > 0:
+                                break
+                    except Exception as e:
+                        logger.debug(f"[ZhihuScraper] Error getting likes: {e}")
+
                     # Determine type
                     article_type = "question" if "question" in source_url else "article"
 
@@ -573,9 +843,10 @@ class ZhihuScraper:
                             "summary": summary[:200],
                             "source_url": source_url,
                             "type": article_type,
-                            "likes": 0,
+                            "likes": likes,
+                            "created_time": created_time.strip()[:50] if created_time else "",
                         })
-                        logger.info(f"[ZhihuScraper] Found user article: {title[:30] if title else 'N/A'}...")
+                        logger.info(f"[ZhihuScraper] Found user article: {title[:30] if title else 'N/A'}... time={created_time}")
 
                 except Exception as e:
                     logger.debug(f"[ZhihuScraper] Error processing item: {e}")

@@ -40,7 +40,8 @@ pip install -r requirements.txt
 创建 `.env` 文件：
 ```
 QWEN_API_KEY=your-api-key
-QWEN_MODEL=qwen3.5-plus
+QWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen3.6-plus
 ```
 
 ### 3. 启动服务
@@ -160,7 +161,7 @@ docker run -d --name attu -p 3000:3000 -e MILVUS_URL=host.docker.internal:19530 
 | 变量 | 说明 | 必填 |
 |------|------|------|
 | QWEN_API_KEY | 通义千问 API Key | 是 |
-| QWEN_MODEL | 模型名称 | 否（默认 qwen3.5-plus） |
+| QWEN_MODEL | 模型名称 | 否（默认 qwen3.6-plus） |
 
 ### 浏览器缓存
 

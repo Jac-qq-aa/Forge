@@ -18,6 +18,20 @@ from forge.deep_mode.session_manager import (
     get_session_manager,
 )
 
+# Paragraph generation (LongWriter AgentWrite style)
+from forge.deep_mode.paragraph_generator import (
+    ParagraphGenerator,
+    ParagraphTask,
+    get_paragraph_generator,
+    generate_article_with_paragraphs,
+    estimate_target_length,
+    parse_paragraph_outline,
+)
+from forge.deep_mode.paragraph_cache import (
+    ParagraphCache,
+    get_paragraph_cache,
+)
+
 # Workflow exports (deer-flow pattern)
 from forge.deep_mode.workflow import (
     DeepModeState,
@@ -31,6 +45,18 @@ from forge.deep_mode.workflow import (
     generate_outline,
     revise_outline,
     generate_content,
+    # Tuning tools - basic
+    rewrite_section,
+    adjust_tone,
+    check_fact,
+    search_knowledge,
+    # Tuning tools - enhanced (paragraph-level)
+    expand_paragraph,
+    shrink_paragraph,
+    merge_paragraphs,
+    split_paragraph,
+    check_coherence,
+    get_word_count,
 )
 
 # Compatibility alias
@@ -48,6 +74,15 @@ __all__ = [
     "RAGSearchFailedError",
     "SessionManager",
     "get_session_manager",
+    # Paragraph generation
+    "ParagraphGenerator",
+    "ParagraphTask",
+    "get_paragraph_generator",
+    "generate_article_with_paragraphs",
+    "estimate_target_length",
+    "parse_paragraph_outline",
+    "ParagraphCache",
+    "get_paragraph_cache",
     # Workflow (deer-flow pattern)
     "DeepModeState",
     "WorkflowState",  # compatibility alias
@@ -60,4 +95,16 @@ __all__ = [
     "generate_outline",
     "revise_outline",
     "generate_content",
+    # Tuning tools - basic
+    "rewrite_section",
+    "adjust_tone",
+    "check_fact",
+    "search_knowledge",
+    # Tuning tools - enhanced
+    "expand_paragraph",
+    "shrink_paragraph",
+    "merge_paragraphs",
+    "split_paragraph",
+    "check_coherence",
+    "get_word_count",
 ]

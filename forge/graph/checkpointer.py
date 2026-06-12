@@ -42,9 +42,10 @@ async def get_checkpointer() -> AsyncPostgresSaver:
     """获取 AsyncPostgresSaver 单例。
 
     首次调用时会初始化连接池和表结构。
+    如果PostgreSQL未运行，返回None（禁用状态持久化）。
 
     Returns:
-        AsyncPostgresSaver 实例
+        AsyncPostgresSaver 实例，或None（数据库不可用时）
     """
     global _pool, _checkpointer
 
@@ -59,22 +60,29 @@ async def get_checkpointer() -> AsyncPostgresSaver:
             open=False,
         )
 
-        # 打开连接池
-        await _pool.open()
-        logger.info(f"[Checkpointer] Connection pool opened: {PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+        # 尝试打开连接池（设置超时避免阻塞）
+        try:
+            import asyncio
+            await asyncio.wait_for(_pool.open(), timeout=10.0)
+            logger.info(f"[Checkpointer] Connection pool opened: {PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+        except asyncio.TimeoutError:
+            logger.warning("[Checkpointer] Connection pool open timeout (10s), PostgreSQL may not be running")
+            _pool = None
+            return None
+        except Exception as e:
+            logger.warning(f"[Checkpointer] Connection pool open failed: {e}")
+            _pool = None
+            return None
 
         # 创建 checkpointer
         _checkpointer = AsyncPostgresSaver(_pool)
 
         # 初始化表结构
-        # 注意：CREATE INDEX CONCURRENTLY 不能在事务内运行
-        # 使用 autocommit 连接执行 setup
         try:
             async with await psycopg.AsyncConnection.connect(
                 conn_string,
-                autocommit=True,  # autocommit 模式，不在事务内
+                autocommit=True,
             ) as conn:
-                # 手动执行 migrations
                 await _run_migrations(conn)
             logger.info("[Checkpointer] Tables initialized")
         except Exception as e:

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Forge - 锐博集团内容转换平台</title>
-    <link rel="stylesheet" href="/static/style.css?v=11">
+    <link rel="stylesheet" href="/static/style.css?v=19">
 </head>
 <body>
     <!-- Logo 在右上角 -->
@@ -14,7 +14,10 @@
     <header class="main-header">
         <h1 class="main-title">Forge 内容转换平台</h1>
         <p class="main-subtitle">智能抓取 · AI改写 · 内容发布</p>
-        <button class="btn btn-small history-btn" onclick="showHistoryModal()">📜 历史记录</button>
+        <div class="header-buttons">
+            <button class="btn btn-small blogger-btn" onclick="showBloggerArticlesModal()">📚 订阅博主</button>
+            <button class="btn btn-small history-btn" onclick="showHistoryModal()">📜 历史记录</button>
+        </div>
     </header>
 
     <!-- 历史记录弹窗 -->
@@ -132,7 +135,7 @@
                 <div class="blogger-selector">
                     <select id="blogger-list" onchange="selectBlogger()">
                         <option value="">-- 选择博主 --</option>
-                        <option value="rui-bo-ji-tuan-5">rui-bo-ji-tuan-5 (锐博集团)</option>
+                        <option value="rui-bo-ji-tuan-5">rui-bo-ji-tuan-5 (锐博集团) [知乎]</option>
                     </select>
                     <button class="btn btn-small btn-add" onclick="showAddBloggerDialog()">添加</button>
                     <button class="btn btn-small btn-remove" onclick="removeBlogger()">删除</button>
@@ -689,9 +692,18 @@
                 <h3>添加博主</h3>
                 <div class="modal-body">
                     <div class="form-group">
+                        <label for="modal-blogger-platform">平台</label>
+                        <select id="modal-blogger-platform">
+                            <option value="zhihu">知乎</option>
+                            <option value="wechat">公众号</option>
+                            <option value="baijia">百家号</option>
+                            <option value="other">其他</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label for="modal-blogger-id">博主ID</label>
                         <input type="text" id="modal-blogger-id" placeholder="如: rui-bo-ji-tuan-5">
-                        <p class="input-hint">知乎主页链接中 people/ 后面的部分</p>
+                        <p class="input-hint" id="blogger-id-hint">知乎主页链接中 people/ 后面的部分</p>
                     </div>
                     <div class="form-group">
                         <label for="modal-blogger-note">备注名（可选）</label>
@@ -702,6 +714,29 @@
                 <div class="modal-actions">
                     <button class="btn btn-secondary" onclick="closeBloggerModal()">取消</button>
                     <button class="btn btn-primary" onclick="confirmAddBlogger()">添加</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 查看博主文章模态框 -->
+        <div id="blogger-articles-modal" class="modal" style="display: none;">
+            <div class="modal-content blogger-articles-modal-content">
+                <div class="modal-header">
+                    <h3>📚 订阅博主近期文章</h3>
+                    <button class="modal-close" onclick="closeBloggerArticlesModal()">×</button>
+                </div>
+                <div class="modal-body">
+                    <div id="blogger-articles-loading" style="display: none;">
+                        <p class="loading-text">正在获取博主文章...</p>
+                    </div>
+                    <div id="blogger-articles-list" style="display: none;"></div>
+                    <div id="blogger-articles-empty" style="display: none;">
+                        <p class="empty-text">暂无关注博主，请先添加</p>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="refreshBloggerArticles()">刷新</button>
+                    <button class="btn btn-primary" onclick="closeBloggerArticlesModal()">关闭</button>
                 </div>
             </div>
         </div>
@@ -743,8 +778,25 @@
 
         // Preset bloggers
         const PRESET_BLOGGERS = [
-            {id: 'rui-bo-ji-tuan-5', note: '锐博集团'}
+            {id: 'rui-bo-ji-tuan-5', note: '锐博集团', platform: 'zhihu'}
         ];
+
+        // Platform labels
+        const PLATFORM_LABELS = {
+            'zhihu': '知乎',
+            'wechat': '公众号',
+            'baijia': '百家号',
+            'other': '其他'
+        };
+
+        function readJsonArray(key) {
+            try {
+                const value = JSON.parse(localStorage.getItem(key) || '[]');
+                return Array.isArray(value) ? value : [];
+            } catch (e) {
+                return [];
+            }
+        }
 
         // DOM Elements
         const searchBtn = document.getElementById('search-btn');
@@ -755,37 +807,55 @@
 
         // Initialize blogger list
         function initBloggerList() {
-            const savedBloggers = JSON.parse(localStorage.getItem('customBloggers') || '[]');
-            const deletedBloggers = JSON.parse(localStorage.getItem('deletedBloggers') || '[]');
+            const savedBloggers = readJsonArray('customBloggers');
+            const deletedBloggers = readJsonArray('deletedBloggers');
             const bloggerList = document.getElementById('blogger-list');
 
-            // Remove deleted presets
-            PRESET_BLOGGERS.forEach(blogger => {
-                if (deletedBloggers.includes(blogger.id)) {
-                    const option = bloggerList.querySelector(`option[value="${blogger.id}"]`);
-                    if (option) option.remove();
-                }
-            });
+            bloggerList.innerHTML = '<option value="">-- 选择博主 --</option>';
 
-            // Clear custom options
-            const presetCount = PRESET_BLOGGERS.filter(b => !deletedBloggers.includes(b.id)).length + 1;
-            while (bloggerList.options.length > presetCount) {
-                bloggerList.remove(presetCount);
-            }
+            const bloggers = [
+                ...PRESET_BLOGGERS,
+                ...savedBloggers.map(normalizeBlogger).filter(Boolean)
+            ];
+            const seen = new Set();
 
-            // Add custom bloggers
-            savedBloggers.forEach(blogger => {
-                if (!deletedBloggers.includes(blogger.id)) {
-                    const option = document.createElement('option');
-                    option.value = blogger.id;
-                    option.textContent = blogger.note ? `${blogger.id} (${blogger.note})` : blogger.id;
-                    bloggerList.appendChild(option);
-                }
+            bloggers.forEach(blogger => {
+                if (deletedBloggers.includes(blogger.id) || seen.has(blogger.id)) return;
+                seen.add(blogger.id);
+                bloggerList.appendChild(createBloggerOption(blogger));
             });
         }
 
+        function normalizeBlogger(blogger) {
+            if (typeof blogger === 'string') {
+                const id = blogger.trim();
+                return id ? {id: id, note: '', platform: 'zhihu'} : null;
+            }
+            if (!blogger || typeof blogger !== 'object' || !blogger.id) {
+                return null;
+            }
+            const id = String(blogger.id).trim();
+            if (!id) return null;
+            return {
+                id: id,
+                note: blogger.note || '',
+                platform: blogger.platform || 'zhihu'
+            };
+        }
+
+        function createBloggerOption(blogger) {
+            const option = document.createElement('option');
+            option.value = blogger.id;
+            option.textContent = formatBloggerName(blogger);
+            return option;
+        }
+
         function formatBloggerName(blogger) {
-            return blogger.note ? `${blogger.id} (${blogger.note})` : blogger.id;
+            blogger = normalizeBlogger(blogger);
+            if (!blogger) return '';
+            const platformLabel = PLATFORM_LABELS[blogger.platform] || blogger.platform || '知乎';
+            const notePart = blogger.note ? ` (${blogger.note})` : '';
+            return `${blogger.id}${notePart} [${platformLabel}]`;
         }
 
         function selectBlogger() {
@@ -794,27 +864,265 @@
         }
 
         function showAddBloggerDialog() {
+            document.getElementById('modal-blogger-platform').value = 'zhihu';
             document.getElementById('modal-blogger-id').value = '';
             document.getElementById('modal-blogger-note').value = '';
+            updateBloggerIdHint();
             document.getElementById('blogger-modal').style.display = 'flex';
             document.getElementById('modal-blogger-id').focus();
         }
+
+        function updateBloggerIdHint() {
+            const platform = document.getElementById('modal-blogger-platform').value;
+            const hint = document.getElementById('blogger-id-hint');
+            const input = document.getElementById('modal-blogger-id');
+            switch (platform) {
+                case 'zhihu':
+                    hint.textContent = '知乎主页链接中 people/ 后面的部分';
+                    input.placeholder = '如: rui-bo-ji-tuan-5';
+                    break;
+                case 'wechat':
+                    hint.textContent = '公众号名称或 ID';
+                    input.placeholder = '如: 锐博集团';
+                    break;
+                case 'baijia':
+                    hint.textContent = '百家号作者 ID';
+                    input.placeholder = '如: author_123';
+                    break;
+                default:
+                    hint.textContent = '博主唯一标识';
+                    input.placeholder = '博主ID';
+            }
+        }
+
+        document.getElementById('modal-blogger-platform').addEventListener('change', updateBloggerIdHint);
 
         function closeBloggerModal() {
             document.getElementById('blogger-modal').style.display = 'none';
         }
 
+        // ========== 博主文章查看功能 ==========
+
+        function showBloggerArticlesModal() {
+            document.getElementById('blogger-articles-modal').style.display = 'flex';
+            refreshBloggerArticles();
+        }
+
+        function closeBloggerArticlesModal() {
+            document.getElementById('blogger-articles-modal').style.display = 'none';
+        }
+
+        function getArticleBody(article) {
+            return article.text || article.content || article.full_content || article.summary || '';
+        }
+
+        function normalizeLikeCount(value) {
+            if (value === null || value === undefined || value === '') return 0;
+            if (typeof value === 'number') return Math.max(0, Math.floor(value));
+
+            const text = String(value).replace(/,/g, '').replace(/\+/g, '').trim();
+            const match = text.match(/(\d+(?:\.\d+)?)\s*([万千kK]?)/);
+            if (!match) return 0;
+
+            let count = Number(match[1]);
+            if (match[2] === '万') count *= 10000;
+            if (match[2] === '千' || match[2] === 'k' || match[2] === 'K') count *= 1000;
+            return Math.max(0, Math.floor(count));
+        }
+
+        function formatLikeCount(value) {
+            const count = normalizeLikeCount(value);
+            if (count >= 10000) return (count / 10000).toFixed(count >= 100000 ? 0 : 1) + '万';
+            return String(count);
+        }
+
+        async function syncLocalBloggersToServer() {
+            const localBloggers = [
+                ...PRESET_BLOGGERS,
+                ...readJsonArray('customBloggers').map(normalizeBlogger).filter(Boolean)
+            ];
+            const deletedBloggers = readJsonArray('deletedBloggers');
+            const seen = new Set();
+
+            for (const blogger of localBloggers) {
+                if (!blogger || !blogger.id || deletedBloggers.includes(blogger.id) || seen.has(blogger.id)) continue;
+                seen.add(blogger.id);
+                try {
+                    await fetch('/api/bloggers', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            blogger_id: blogger.id,
+                            name: blogger.note || blogger.name || blogger.id,
+                            platform: blogger.platform || 'zhihu'
+                        })
+                    });
+                } catch (e) {
+                    console.warn('[Blogger] sync failed:', blogger.id, e);
+                }
+            }
+        }
+
+        async function refreshBloggerArticles() {
+            const loadingDiv = document.getElementById('blogger-articles-loading');
+            const listDiv = document.getElementById('blogger-articles-list');
+            const emptyDiv = document.getElementById('blogger-articles-empty');
+
+            loadingDiv.style.display = 'block';
+            listDiv.style.display = 'none';
+            emptyDiv.style.display = 'none';
+
+            try {
+                // 后端推荐接口读取服务器端订阅文件；先把浏览器 localStorage 中的博主同步过去。
+                await syncLocalBloggersToServer();
+                const response = await fetch('/api/recommend_articles?max_per_blogger=5');
+                const data = await response.json();
+
+                loadingDiv.style.display = 'none';
+
+                if (!data.success) {
+                    emptyDiv.style.display = 'block';
+                    emptyDiv.querySelector('.empty-text').textContent = '获取失败: ' + (data.error || '未知错误');
+                    return;
+                }
+
+                if (!data.articles || data.articles.length === 0) {
+                    emptyDiv.style.display = 'block';
+                    emptyDiv.querySelector('.empty-text').textContent = data.message || '暂无文章';
+                    return;
+                }
+
+                // 渲染文章列表
+                window.bloggerArticlesData = data.articles;
+                let html = '';
+                data.articles.forEach((article, index) => {
+                    const title = article.title || '无标题';
+                    const body = getArticleBody(article) || '无内容';
+                    const url = article.source_url || article.url || '';
+                    const author = article.blogger_name || article.author || '未知作者';
+                    const likes = formatLikeCount(article.likes ?? article.like_count ?? article.vote_count ?? article.upvote_count ?? article.likes_text);
+                    const createdTime = article.created_time || '';
+                    const excerpt = body.length > 200 ? body.substring(0, 200) + '...' : body;
+
+                    html += `
+                        <div class="blogger-article-card" data-index="${index}">
+                            <div class="article-header">
+                                <span class="article-author">👤 ${escapeHtml(author)}</span>
+                                ${createdTime ? `<span class="article-date">📅 ${escapeHtml(createdTime)}</span>` : ''}
+                                <span class="article-likes">👍 <span class="article-like-count">${likes}</span></span>
+                            </div>
+                            <h4 class="article-title">${escapeHtml(title)}</h4>
+                            <div class="article-excerpt">${escapeHtml(excerpt)}</div>
+                            <div class="article-full-content" style="display: none;">${escapeHtml(body)}</div>
+                            <div class="article-actions">
+                                <button class="btn btn-small" onclick="toggleArticleContent(this, ${index})">展开全文</button>
+                                ${url ? `<a href="${escapeHtml(url)}" target="_blank" class="btn btn-small btn-link">原文链接</a>` : ''}
+                                <button class="btn btn-small btn-primary" onclick="useThisArticle(${index})">使用此文章</button>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                listDiv.innerHTML = html;
+                listDiv.style.display = 'block';
+
+            } catch (err) {
+                loadingDiv.style.display = 'none';
+                emptyDiv.style.display = 'block';
+                emptyDiv.querySelector('.empty-text').textContent = '网络错误: ' + err.message;
+            }
+        }
+
+        async function toggleArticleContent(btn, index) {
+            const card = btn.closest('.blogger-article-card');
+            const excerptDiv = card.querySelector('.article-excerpt');
+            const fullDiv = card.querySelector('.article-full-content');
+            const article = window.bloggerArticlesData?.[index];
+
+            if (fullDiv.style.display === 'none') {
+                const currentText = fullDiv.textContent.trim();
+                const url = article?.source_url || article?.url || '';
+                if (article && url && !article._detailLoaded) {
+                    btn.disabled = true;
+                    btn.textContent = '加载中...';
+                    try {
+                        const response = await fetch('/api/article_detail', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({source_url: url, source_platform: 'zhihu'})
+                        });
+                        const data = await response.json();
+                        if (data.success && data.article) {
+                            article.text = data.article.text || currentText;
+                            article.likes = data.article.likes ?? article.likes;
+                            article._detailLoaded = true;
+                            fullDiv.textContent = article.text || currentText;
+                            const likeEl = card.querySelector('.article-like-count');
+                            if (likeEl) likeEl.textContent = formatLikeCount(article.likes);
+                        }
+                    } catch (err) {
+                        fullDiv.textContent = currentText + '\n\n全文加载失败: ' + err.message;
+                    } finally {
+                        btn.disabled = false;
+                    }
+                }
+                excerptDiv.style.display = 'none';
+                fullDiv.style.display = 'block';
+                btn.textContent = '收起';
+            } else {
+                excerptDiv.style.display = 'block';
+                fullDiv.style.display = 'none';
+                btn.textContent = '展开全文';
+            }
+        }
+
+        function useThisArticle(index) {
+            try {
+                const article = window.bloggerArticlesData?.[index];
+                if (!article) {
+                    alert('文章数据不存在，请刷新后重试');
+                    return;
+                }
+                // 关闭弹窗
+                closeBloggerArticlesModal();
+                // 设置文章数据
+                const body = getArticleBody(article);
+                selectedArticle = {
+                    title: article.title,
+                    content: body,
+                    summary: body,
+                    url: article.source_url || article.url,
+                    source_url: article.source_url || article.url,
+                    author: article.blogger_name || article.author,
+                    type: article.type || '文章',
+                    likes: normalizeLikeCount(article.likes),
+                    created_time: article.created_time || ''
+                };
+                // 自动填充博主 ID
+                if (article.blogger_id) {
+                    document.getElementById('blogger-id').value = article.blogger_id;
+                    document.getElementById('blogger-list').value = article.blogger_id;
+                }
+                showNotification('已选择文章: ' + article.title, 'success');
+                // 直接显示模式选择界面
+                showModeSelection();
+            } catch (e) {
+                alert('解析文章数据失败');
+            }
+        }
+
         function confirmAddBlogger() {
             const id = document.getElementById('modal-blogger-id').value.trim();
             const note = document.getElementById('modal-blogger-note').value.trim();
+            const platform = document.getElementById('modal-blogger-platform').value;
 
             if (!id) {
                 alert('请输入博主ID');
                 return;
             }
 
-            const savedBloggers = JSON.parse(localStorage.getItem('customBloggers') || '[]');
-            const deletedBloggers = JSON.parse(localStorage.getItem('deletedBloggers') || '[]');
+            const savedBloggers = readJsonArray('customBloggers');
+            const deletedBloggers = readJsonArray('deletedBloggers');
 
             const allOptions = Array.from(document.getElementById('blogger-list').options).map(o => o.value);
             if (allOptions.includes(id)) {
@@ -829,7 +1137,7 @@
                 localStorage.setItem('deletedBloggers', JSON.stringify(deletedBloggers));
             }
 
-            const blogger = {id: id, note: note || ''};
+            const blogger = {id: id, note: note || '', platform: platform};
             const isPreset = PRESET_BLOGGERS.some(p => p.id === id);
             if (!isPreset) {
                 savedBloggers.push(blogger);
@@ -844,6 +1152,13 @@
 
             bloggerList.value = id;
             document.getElementById('blogger-id').value = id;
+
+            // 同步到服务器端订阅列表，供“订阅博主文章”推荐接口使用。
+            fetch('/api/bloggers', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({blogger_id: id, name: note || id, platform: platform})
+            }).catch(e => console.warn('[Blogger] server add failed:', e));
 
             closeBloggerModal();
             showNotification('博主已添加: ' + formatBloggerName(blogger), 'success');
@@ -865,14 +1180,14 @@
                 return;
             }
 
-            const savedBloggers = JSON.parse(localStorage.getItem('customBloggers') || '[]');
-            const index = savedBloggers.findIndex(b => b.id === selectedId);
+            const savedBloggers = readJsonArray('customBloggers');
+            const index = savedBloggers.findIndex(b => normalizeBlogger(b)?.id === selectedId);
             if (index > -1) {
                 savedBloggers.splice(index, 1);
                 localStorage.setItem('customBloggers', JSON.stringify(savedBloggers));
             }
 
-            const deletedBloggers = JSON.parse(localStorage.getItem('deletedBloggers') || '[]');
+            const deletedBloggers = readJsonArray('deletedBloggers');
             if (!deletedBloggers.includes(selectedId)) {
                 deletedBloggers.push(selectedId);
                 localStorage.setItem('deletedBloggers', JSON.stringify(deletedBloggers));
@@ -883,6 +1198,9 @@
 
             bloggerList.value = '';
             document.getElementById('blogger-id').value = '';
+
+            fetch('/api/bloggers/' + encodeURIComponent(selectedId), {method: 'DELETE'})
+                .catch(e => console.warn('[Blogger] server delete failed:', e));
 
             showNotification('博主已删除: ' + displayName, 'success');
         }
@@ -2229,8 +2547,8 @@
             // 检查连接状态
             if (!deepWsConnected || !deepWebSocket || deepWebSocket.readyState !== WebSocket.OPEN) {
                 showNotification('WebSocket 未连接，正在尝试重连...', 'warning');
-                // 尝试重连
-                startDeepChat();
+                // 尝试重连（原 startDeepChat 未定义，使用当前函数重新建立连接）
+                enterDeepChat();
                 return;
             }
 

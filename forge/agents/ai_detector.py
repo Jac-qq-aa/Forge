@@ -1,11 +1,11 @@
 """AI Detector Node - Detect AI-generated content using Perplexity and Burstiness analysis.
 
-This node uses an INDEPENDENT model for judgment (qwen-max),
-separate from the rewriting model (qwen-plus), ensuring objective AI detection.
+This node uses an independent model for judgment,
+separate from the rewriting model, ensuring objective AI detection.
 
-Model isolation (same API, different models):
-- Rewriting: qwen-plus (Editor, Humanizer_Editor)
-- Judgment: qwen-max (AI_Detector) - stronger model
+Model isolation (same API, configurable models):
+- Rewriting: QWEN_MODEL (Editor, Humanizer_Editor)
+- Judgment: JUDGE_MODEL (AI_Detector)
 """
 
 import logging
@@ -14,7 +14,7 @@ import numpy as np
 from langsmith import traceable
 from forge.graph.state import GraphState
 from forge.tools.judge_llm_client import JudgeLLMClient, has_judge_client, JudgeLLMClientError
-from forge.config import AI_THRESHOLD
+from forge.config import AI_THRESHOLD, JUDGE_MODEL, QWEN_MODEL
 from forge.evaluation.probe_decorator import with_probe
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ async def ai_detector_node(state: GraphState) -> dict:
     humanize_revisions = state.get("humanize_revisions", 0)
 
     logger.info(f"[AI_Detector] Starting detection (attempt {humanize_revisions + 1})")
-    logger.info(f"[AI_Detector] Using qwen-max for independent judgment (isolated from qwen-plus rewriting)")
+    logger.info(f"[AI_Detector] Using {JUDGE_MODEL} for independent judgment (isolated from {QWEN_MODEL} rewriting)")
 
     original_title = raw_content.get("title", "")
     original_text = raw_content.get("text", "")
@@ -171,8 +171,8 @@ async def ai_detector_node(state: GraphState) -> dict:
 【人性化建议】(如果AI得分>0.5，给出具体修改建议)
 """
 
-        system_prompt = """你是一位专业的AI内容检测专家，使用 qwen-max 模型进行独立判断。
-你的判断独立于改写模型(qwen-plus)，目标是客观评估内容的AI生成特征。
+        system_prompt = f"""你是一位专业的AI内容检测专家，使用 {JUDGE_MODEL} 模型进行独立判断。
+你的判断独立于改写模型({QWEN_MODEL})，目标是客观评估内容的AI生成特征。
 重点分析 Perplexity 和 Burstiness 两个维度。
 请严格按照指定格式回复，确保数值准确。"""
 
@@ -230,7 +230,7 @@ async def ai_detector_node(state: GraphState) -> dict:
         if humanize_match:
             humanize_feedback = humanize_match.group(1).strip()
         else:
-            humanize_feedback = f"""判断模型(qwen-max)分析：AI概率 {ai_score:.0%}
+            humanize_feedback = f"""判断模型({JUDGE_MODEL})分析：AI概率 {ai_score:.0%}
 - Perplexity: {perplexity}
 - Burstiness: {burstiness}
 

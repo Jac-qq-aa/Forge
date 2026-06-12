@@ -26,7 +26,7 @@ class EvolutionConfig:
 
     # === RAG检索配置 ===
     QUALITY_CASE_TOP_K: int = 2        # 检索案例数量
-    VECTOR_DIMENSION: int = 384        # 向量维度（all-MiniLM-L6-v2）
+    VECTOR_DIMENSION: int = 1024       # 向量维度（BGE-large-zh-v1.5）
 
     # === Milvus配置 ===
     QUALITY_CASES_COLLECTION: str = "quality_cases_vectors"

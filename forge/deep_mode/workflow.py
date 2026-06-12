@@ -21,6 +21,14 @@ from langchain_core.tools import tool
 
 from forge.tools.llm_client import LLMClient, SyncLLMClient
 from forge.deep_mode.session_state import DeepModeSession
+from forge.deep_mode.paragraph_generator import (
+    get_paragraph_generator,
+    generate_article_with_paragraphs,
+    estimate_target_length,
+    parse_paragraph_outline,
+    ParagraphTask,
+)
+from forge.deep_mode.paragraph_cache import get_paragraph_cache
 from forge.knowledge import get_knowledge_base
 from forge.config import AGENT_EXECUTION_TIMEOUT
 
@@ -105,11 +113,57 @@ async def rag_search(source_article: Dict[str, str]) -> str:
 async def generate_outline(
     source_article: Dict[str, str],
     user_input: str,
+    rag_context: str = "",
+    target_platform: str = "zhihu",
+    use_paragraph_outline: bool = True,
+) -> str:
+    """生成大纲（默认使用段落级大纲）。
+
+    Args:
+        source_article: 原文章数据
+        user_input: 用户改写需求
+        rag_context: RAG知识库素材
+        target_platform: 目标平台
+        use_paragraph_outline: 是否使用段落级大纲（默认True）
+
+    Returns:
+        大纲文本
+    """
+    logger.info("[Workflow] Generating outline (paragraph-level)...")
+
+    # 使用分段生成器的段落大纲
+    generator = get_paragraph_generator()
+
+    try:
+        paragraphs = await generator.generate_paragraph_outline(
+            source_article=source_article,
+            user_input=user_input,
+            rag_context=rag_context,
+            target_platform=target_platform,
+        )
+
+        # 转换为文本大纲格式
+        outline_text = "\n".join([
+            f"段落{p.id} | 主点：{p.main_point} | 字数：{p.word_count} | 素材：{p.rag_reference}"
+            for p in paragraphs
+        ])
+
+        logger.info(f"[Workflow] Paragraph outline generated: {len(paragraphs)} paragraphs, ~{sum(p.word_count for p in paragraphs)} words")
+        return outline_text
+
+    except Exception as e:
+        logger.error(f"[Workflow] Paragraph outline generation failed: {e}")
+        # 降级到传统大纲
+        logger.info("[Workflow] Falling back to traditional outline...")
+        return await _generate_outline_fallback(source_article, user_input, rag_context)
+
+
+async def _generate_outline_fallback(
+    source_article: Dict[str, str],
+    user_input: str,
     rag_context: str = ""
 ) -> str:
-    """生成大纲。"""
-    logger.info("[Workflow] Generating outline...")
-
+    """降级：生成传统大纲格式。"""
     prompt = f"""请根据以下信息生成文章大纲：
 
 ## 原文章内容
@@ -133,10 +187,10 @@ async def generate_outline(
     try:
         llm = LLMClient()
         outline = await llm.chat_with_retry(prompt)
-        logger.info(f"[Workflow] Outline generated: {len(outline)} chars")
+        logger.info(f"[Workflow] Fallback outline generated: {len(outline)} chars")
         return outline
     except Exception as e:
-        logger.error(f"[Workflow] Outline generation failed: {e}")
+        logger.error(f"[Workflow] Fallback outline generation failed: {e}")
         raise
 
 
@@ -153,9 +207,21 @@ async def revise_outline(current_outline: str, user_feedback: str) -> str:
 {user_feedback}
 
 ## 修改要求
-1. 严格按照用户反馈修改
-2. 用户要求删除就删除，要求增加就增加，不限制结构变化
-3. 保持剩余内容的逻辑连贯性
+
+### 删除操作（最重要）
+当用户要求"删除第X点"时：
+- **彻底删除**该点的标题和所有内容
+- **不要**将内容移动到其他位置
+- **不要**重新排列剩余内容（保持原有编号）
+- 示例：删除第三点后，大纲变成：一、二、四、五...（不重新编号为一、二、三、四）
+
+### 其他操作
+1. 增加：在指定位置插入新内容
+2. 修改：只改指定内容，其他不变
+3. 调整顺序：按用户要求移动位置
+
+### 输出格式
+直接输出修改后的完整大纲，不要添加任何解释。
 
 直接输出修改后的大纲：
 """
@@ -175,21 +241,125 @@ async def generate_content(
     source_article: Dict[str, str],
     rag_context: str = "",
     return_template_id: bool = False,
+    user_input: str = "",
+    target_platform: str = "zhihu",
+    use_paragraph_generation: bool = True,
+    session_id: str = "",
 ) -> str | tuple:
-    """根据大纲生成全文。
-
-    使用动态 Prompt 模板 + 高质量案例参考。
+    """根据大纲生成全文（默认使用分段生成）。
 
     Args:
-        outline: 大纲内容
+        outline: 大纲内容（可能是段落级大纲或传统大纲）
         source_article: 原文章数据 {title, text, url, platform}
         rag_context: RAG 知识库素材
         return_template_id: 是否返回模板ID（用于效果统计）
+        user_input: 用户改写需求
+        target_platform: 目标平台
+        use_paragraph_generation: 是否使用分段生成（默认True）
+        session_id: 会话ID（用于缓存）
 
     Returns:
         生成的草稿内容，如果 return_template_id=True 则返回 (draft, template_id)
     """
-    logger.info("[Workflow] Generating content with dynamic template...")
+    logger.info("[Workflow] Generating content...")
+
+    # 判断大纲类型：段落级大纲 vs 传统大纲
+    is_paragraph_outline = "|" in outline and "段落" in outline or "主点" in outline
+
+    if use_paragraph_generation and is_paragraph_outline:
+        # 使用分段生成（段落级大纲）
+        logger.info("[Workflow] Using paragraph-by-paragraph generation...")
+        return await _generate_content_by_paragraphs(
+            outline=outline,
+            source_article=source_article,
+            user_input=user_input,
+            rag_context=rag_context,
+            return_template_id=return_template_id,
+            session_id=session_id,
+        )
+    else:
+        # 使用一次性生成（传统大纲或短文）
+        logger.info("[Workflow] Using one-shot generation...")
+        return await _generate_content_once(
+            outline=outline,
+            source_article=source_article,
+            rag_context=rag_context,
+            return_template_id=return_template_id,
+        )
+
+
+async def _generate_content_by_paragraphs(
+    outline: str,
+    source_article: Dict[str, str],
+    user_input: str,
+    rag_context: str,
+    return_template_id: bool,
+    session_id: str,
+) -> str | tuple:
+    """分段生成全文（段落级大纲）。"""
+    generator = get_paragraph_generator()
+    cache = get_paragraph_cache()
+
+    # 解析段落大纲
+    paragraphs = parse_paragraph_outline(outline)
+
+    if not paragraphs:
+        logger.warning("[Workflow] Failed to parse paragraph outline, using one-shot")
+        return await _generate_content_once(outline, source_article, rag_context, return_template_id)
+
+    logger.info(f"[Workflow] Paragraph-by-paragraph: {len(paragraphs)} paragraphs")
+
+    # 逐段生成
+    full_text = ""
+    total_words = sum(p.word_count for p in paragraphs)
+
+    for i, paragraph in enumerate(paragraphs):
+        paragraph_id = str(paragraph.id)
+
+        # 检查缓存
+        cached_content = cache.get(session_id, paragraph_id)
+        if cached_content:
+            logger.info(f"[Workflow] Using cached content for paragraph {paragraph_id}")
+            full_text += cached_content + "\n\n"
+            continue
+
+        # 生成单个段落
+        logger.info(f"[Workflow] Generating paragraph {paragraph_id}/{len(paragraphs)}...")
+
+        content = await generator.generate_paragraph(
+            paragraph=paragraph,
+            all_paragraphs=paragraphs,
+            written_text=full_text,
+            source_article=source_article,
+            user_input=user_input,
+        )
+
+        # 缓存结果
+        if session_id:
+            cache.set(session_id, paragraph_id, content)
+
+        full_text += content + "\n\n"
+
+        # 每3段输出进度
+        if (i + 1) % 3 == 0:
+            logger.info(f"[Workflow] Progress: {i + 1}/{len(paragraphs)} paragraphs, ~{len(full_text)} chars")
+
+    draft = full_text.strip()
+    logger.info(f"[Workflow] Paragraph generation complete: {len(draft)} chars, {len(paragraphs)} paragraphs")
+
+    if return_template_id:
+        return draft, "paragraph_generator"
+    return draft
+
+
+async def _generate_content_once(
+    outline: str,
+    source_article: Dict[str, str],
+    rag_context: str,
+    return_template_id: bool,
+) -> str | tuple:
+    """一次性生成全文（传统方式，用于短文或降级场景）。"""
+    logger.info("[Workflow] One-shot content generation...")
 
     # 初始化变量（降级时的默认值）
     template = None
@@ -200,36 +370,29 @@ async def generate_content(
     try:
         from forge.evolution import get_prompt_manager, get_quality_knowledge_manager, ensure_default_templates
 
-        # 确保默认模板已初始化
         await ensure_default_templates()
 
-        # 获取当前激活的模板
         prompt_manager = get_prompt_manager()
         template = await prompt_manager.get_active_template("deep_content_generator")
 
-        # 获取高质量案例参考
         quality_kb = get_quality_knowledge_manager()
         platform = source_article.get("platform", "zhihu")
         quality_context = await quality_kb.get_context_for_generation(outline, platform)
 
     except Exception as e:
-        # 降级：使用硬编码模板
         logger.warning(f"[Workflow] Evolution system unavailable, using fallback: {e}")
         from forge.evolution import get_fallback_template, skip_quality_context
 
         template = get_fallback_template("deep_content_generator")
         quality_context = skip_quality_context()
 
-    # 确保 template 存在（双重保险）
     if template is None:
         from forge.evolution import get_fallback_template
         template = get_fallback_template("deep_content_generator")
 
-    # 组装 prompt
     system_prompt = template.get("system_prompt", "")
     user_prompt_template = template.get("user_prompt_template", "")
 
-    # 安全格式化（缺失变量使用默认值）
     variables = {
         "outline": outline,
         "title": source_article.get("title", ""),
@@ -238,26 +401,23 @@ async def generate_content(
         "quality_context": quality_context,
     }
 
-    # 格式化 user_prompt
     if prompt_manager:
         user_prompt = prompt_manager.safe_format_template(user_prompt_template, variables)
     else:
-        # 直接格式化，缺失变量使用默认值
         safe_vars = {k: v or "无" for k, v in variables.items()}
         user_prompt = user_prompt_template.format(**safe_vars)
 
-    # 调用 LLM
     try:
         llm = LLMClient()
         draft = await llm.chat_with_retry(user_prompt, system_prompt)
-        logger.info(f"[Workflow] Content generated: {len(draft)} chars, template={template.get('id')}")
+        logger.info(f"[Workflow] One-shot content generated: {len(draft)} chars, template={template.get('id')}")
 
         if return_template_id:
             return draft, template.get("id")
         return draft
 
     except Exception as e:
-        logger.error(f"[Workflow] Content generation failed: {e}")
+        logger.error(f"[Workflow] One-shot content generation failed: {e}")
         raise
 
 
@@ -348,10 +508,95 @@ def search_knowledge(query: str) -> str:
 
 
 # ============================================================================
+# Tuning Agent Tools - 增强版（段落级操作）
+# ============================================================================
+
+@tool
+def expand_paragraph(paragraph_id: str, target_words: str) -> str:
+    """扩展指定段落的字数。
+
+    Args:
+        paragraph_id: 段落编号（如"1"、"2"、"第三段"）
+        target_words: 目标字数（如"800"、"增加200字"）
+
+    Returns:
+        扩展后的完整文章（Agent会注入当前草稿）
+    """
+    logger.info(f"[TuningTool] expand_paragraph: {paragraph_id} → {target_words}")
+    return f"expand_paragraph_called: {paragraph_id}, {target_words}"
+
+
+@tool
+def shrink_paragraph(paragraph_id: str, target_words: str) -> str:
+    """缩减指定段落的字数。
+
+    Args:
+        paragraph_id: 段落编号（如"1"、"2"、"第三段"）
+        target_words: 目标字数（如"300"、"缩减到500字"）
+
+    Returns:
+        缩减后的完整文章
+    """
+    logger.info(f"[TuningTool] shrink_paragraph: {paragraph_id} → {target_words}")
+    return f"shrink_paragraph_called: {paragraph_id}, {target_words}"
+
+
+@tool
+def merge_paragraphs(start_id: str, end_id: str) -> str:
+    """合并相邻段落。
+
+    Args:
+        start_id: 起始段落编号
+        end_id: 结束段落编号
+
+    Returns:
+        合并后的完整文章
+    """
+    logger.info(f"[TuningTool] merge_paragraphs: {start_id}-{end_id}")
+    return f"merge_paragraphs_called: {start_id}, {end_id}"
+
+
+@tool
+def split_paragraph(paragraph_id: str) -> str:
+    """拆分过长的段落。
+
+    Args:
+        paragraph_id: 要拆分的段落编号
+
+    Returns:
+        拆分后的完整文章
+    """
+    logger.info(f"[TuningTool] split_paragraph: {paragraph_id}")
+    return f"split_paragraph_called: {paragraph_id}"
+
+
+@tool
+def check_coherence() -> str:
+    """检查全文段落连贯性。
+
+    Returns:
+        连贯性分析结果，指出需要改进的过渡点
+    """
+    logger.info(f"[TuningTool] check_coherence")
+    return "check_coherence_called"
+
+
+@tool
+def get_word_count() -> str:
+    """统计文章各段落字数。
+
+    Returns:
+        各段落字数统计（Agent会注入当前草稿并计算）
+    """
+    logger.info(f"[TuningTool] get_word_count")
+    return "get_word_count_called"
+
+
+# ============================================================================
 # Tuning Agent System Prompt
 # ============================================================================
 
-TUNING_SYSTEM_PROMPT = """你是一个文章微调专家。
+TUNING_SYSTEM_PROMPT = """你是一个文章微调专家，擅长段落级精细化调整。
 
 ## ⚠️ 最重要规则：回复格式
 
@@ -388,6 +633,10 @@ TUNING_SYSTEM_PROMPT = """你是一个文章微调专家。
 - "精简..."
 - "调整语气..."
 - "重写..."
+- "扩展第X段"
+- "缩减第X段"
+- "合并段落"
+- "拆分段落"
 
 **只是提问或评论（用【回答】开头）：**
 - "这篇文章讲什么？"
@@ -396,17 +645,76 @@ TUNING_SYSTEM_PROMPT = """你是一个文章微调专家。
 - "写得不错"
 - "有点长"
 - "我觉得..."
+- "字数统计"
+- "检查连贯性"
 - 任何不带修改意图的问题或评论
+
+## 段落级操作指南
+
+当用户提到段落操作时，按以下规则处理：
+
+### 扩展段落
+用户："第二段太短了，扩展到800字"
+操作：
+1. 识别段落位置（第二段）
+2. 保持原段落核心观点
+3. 扩展内容：增加案例、细节、论述
+4. 字数控制在目标值±10%
+5. 返回完整文章
+
+### 缩减段落
+用户："第三段太长了，缩减到500字"
+操作：
+1. 识别段落位置
+2. 保留核心观点和关键论据
+3. 删除冗余表述、重复内容
+4. 字数控制在目标值±10%
+5. 返回完整文章
+
+### 合并段落
+用户："把第三段和第四段合并"
+操作：
+1. 合并相邻两段内容
+2. 添加过渡句保持连贯
+3. 删除重复表述
+4. 返回完整文章（段落数减少）
+
+### 拆分段落
+用户："第二段太长了，拆分成两段"
+操作：
+1. 找到段落中的逻辑分割点
+2. 拆分为两段
+3. 每段有独立主题句
+4. 添加过渡保持连贯
+5. 返回完整文章（段落数增加）
+
+### 字数统计（提问）
+用户："帮我统计各段落字数"
+回复：【回答】各段落字数统计：
+段落1: xxx字
+段落2: xxx字
+...
+全文总计: xxx字
+
+### 连贯性检查（提问）
+用户："检查全文段落连贯性"
+回复：【回答】连贯性分析：
+- 段落1→2过渡: 良好/需改进
+- 段落2→3过渡: 良好/需改进
+...
+建议改进点：[具体说明]
 
 ## 修改规则
 
 1. 修改请求：返回完整文章，保持结构，只改指定部分
 2. 提问请求：用【回答】开头，不修改文章
+3. 段落操作：精准定位，字数控制±10%
 
 ## 注意
 
 - 模糊情况默认按提问处理（用【回答】开头）
 - 修改请求必须返回完整文章，不能只返回片段
+- 段落编号：用户说"第一段"指文章开头段落，"第二段"指第二个段落
 """
 
 
@@ -419,6 +727,11 @@ def create_tuning_agent():
 
     使用 langchain.agents.create_agent + state_schema。
     参考 deer-flow create_deerflow_agent 模式。
+
+    工具列表：
+    - 基础工具：rewrite_section, adjust_tone, check_fact, search_knowledge
+    - 增强工具：expand_paragraph, shrink_paragraph, merge_paragraphs, split_paragraph
+    - 分析工具：check_coherence, get_word_count
     """
     from langchain_openai import ChatOpenAI
     from forge.config import QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL
@@ -430,10 +743,19 @@ def create_tuning_agent():
     )
 
     tools = [
+        # 基础工具
         rewrite_section,
         adjust_tone,
         check_fact,
         search_knowledge,
+        # 增强工具 - 段落级操作
+        expand_paragraph,
+        shrink_paragraph,
+        merge_paragraphs,
+        split_paragraph,
+        # 分析工具
+        check_coherence,
+        get_word_count,
     ]
 
     try:
@@ -443,7 +765,7 @@ def create_tuning_agent():
             system_prompt=TUNING_SYSTEM_PROMPT,
             state_schema=DeepModeState,  # 关键：传入自定义 state_schema
         )
-        logger.info("[TuningAgent] Agent created with DeepModeState")
+        logger.info("[TuningAgent] Agent created with DeepModeState + enhanced paragraph tools")
         return agent
     except Exception as e:
         logger.warning(f"[TuningAgent] create_agent failed: {e}, using fallback")
