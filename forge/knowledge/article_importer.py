@@ -17,6 +17,7 @@ from typing import List, Dict, Optional, Any
 from forge.knowledge.manager import get_knowledge_base, KnowledgeBase
 from forge.knowledge.text_splitter import ChineseTextSplitter
 from forge.knowledge.config import CATEGORIES
+from forge.knowledge.nnngu_classifier import CLASSIFICATION_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ class ArticleImporter:
         return None
 
     def check_duplicate(self, article_id: str) -> bool:
-        """检查文章是否已导入（通过ID前缀搜索）。
+        """检查文章是否已导入。
 
         Args:
             article_id: 文章ID
@@ -125,16 +126,7 @@ class ArticleImporter:
             True if duplicate found
         """
         try:
-            # 使用search检查是否有相同ID前缀的文档
-            # 注意：这里使用模糊搜索，因为Milvus不支持直接ID查询
-            results = self.kb.search(article_id, n_results=1)
-            if results:
-                # 检查返回结果的标题是否包含文章ID
-                for result in results:
-                    metadata = result.get('metadata', {})
-                    if metadata.get('title', '').startswith(article_id):
-                        return True
-            return False
+            return self.kb.has_article(article_id)
         except Exception as e:
             logger.warning(f"[Importer] Duplicate check failed for {article_id}: {e}")
             return False
@@ -191,14 +183,21 @@ class ArticleImporter:
         documents = []
         for i, chunk in enumerate(chunks):
             doc_id = self._generate_chunk_id(article_id, i)
+            classification_metadata = {
+                field: article.get(field, "") for field in CLASSIFICATION_FIELDS
+            }
             doc = {
                 'id': doc_id,
                 'content': chunk['content'],
                 'metadata': {
                     'category': category,
                     'title': title,
+                    'source': article.get('_platform', ''),
+                    'source_url': article.get('source_url', ''),
+                    'article_id': article_id,
                     'chunk_index': i,
                     'total_chunks': len(chunks),
+                    **classification_metadata,
                 }
             }
             documents.append(doc)
@@ -347,13 +346,21 @@ class ArticleImporter:
                 # 构建文档
                 for i, chunk in enumerate(chunks):
                     doc_id = self._generate_chunk_id(article['id'], i)
+                    classification_metadata = {
+                        field: article.get(field, "") for field in CLASSIFICATION_FIELDS
+                    }
                     doc = {
                         'id': doc_id,
                         'content': chunk['content'],
                         'metadata': {
                             'category': article['category'],
                             'title': article['title'],
+                            'source': article.get('_platform', ''),
+                            'source_url': article.get('source_url', ''),
+                            'article_id': article['id'],
                             'chunk_index': i,
+                            'total_chunks': len(chunks),
+                            **classification_metadata,
                         }
                     }
                     all_documents.append(doc)

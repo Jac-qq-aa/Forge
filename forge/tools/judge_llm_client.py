@@ -21,6 +21,7 @@ from forge.config import (
     JUDGE_API_KEY, JUDGE_API_URL, JUDGE_MODEL, QWEN_MODEL,
     LANGCHAIN_API_KEY, LANGCHAIN_TRACING_V2, LANGCHAIN_PROJECT
 )
+from forge.observability.metrics import record_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class JudgeLLMClient:
 
         try:
             response = await self.llm.ainvoke(messages)
+            record_llm_usage(response, model=JUDGE_MODEL, role="judge")
             content = response.content
 
             if not content:

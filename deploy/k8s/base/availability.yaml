@@ -1,0 +1,41 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: forge-gateway, namespace: forge}
+spec:
+  minAvailable: 2
+  selector: {matchLabels: {app.kubernetes.io/name: forge-gateway}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: forge-web, namespace: forge}
+spec:
+  minAvailable: 2
+  selector: {matchLabels: {app.kubernetes.io/name: forge-web}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: forge-outbox, namespace: forge}
+spec:
+  minAvailable: 2
+  selector: {matchLabels: {app.kubernetes.io/name: forge-outbox}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: forge-workflow-worker, namespace: forge}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app.kubernetes.io/name: forge-workflow-worker}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: forge-zhihu-worker, namespace: forge}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app.kubernetes.io/name: forge-zhihu-worker}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: forge-generation-worker, namespace: forge}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app.kubernetes.io/name: forge-generation-worker}}

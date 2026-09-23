@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge-gateway
+  namespace: forge
+  labels:
+    app.kubernetes.io/name: forge-gateway
+    app.kubernetes.io/part-of: forge
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: forge-gateway, app.kubernetes.io/part-of: forge}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: forge-gateway, app.kubernetes.io/part-of: forge}
+    spec:
+      serviceAccountName: forge
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app.kubernetes.io/name: forge-gateway}}
+      containers:
+        - name: gateway
+          image: forge-app:phase-2
+          imagePullPolicy: IfNotPresent
+          command: [uvicorn]
+          args: [forge.gateway.app:app, --host, 0.0.0.0, --port, "8000", --workers, "1"]
+          envFrom:
+            - configMapRef: {name: forge-config}
+            - secretRef: {name: forge-secrets}
+          env:
+            - {name: PG_POOL_MAX_SIZE, value: "3"}
+            - {name: REDIS_MAX_CONNECTIONS, value: "50"}
+          ports:
+            - {name: http, containerPort: 8000}
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: {path: /live, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 500m, memory: 768Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: output, mountPath: /app/output}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        - {name: output, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forge-gateway
+  namespace: forge
+  labels: {app.kubernetes.io/name: forge-gateway, app.kubernetes.io/part-of: forge}
+spec:
+  selector: {app.kubernetes.io/name: forge-gateway, app.kubernetes.io/part-of: forge}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge-web
+  namespace: forge
+  labels:
+    app.kubernetes.io/name: forge-web
+    app.kubernetes.io/part-of: forge
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: forge-web, app.kubernetes.io/part-of: forge}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: forge-web, app.kubernetes.io/part-of: forge}
+    spec:
+      serviceAccountName: forge
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app.kubernetes.io/name: forge-web}}
+      containers:
+        - name: web
+          image: forge-app:phase-2
+          imagePullPolicy: IfNotPresent
+          command: [uvicorn]
+          args: [forge.web.app:app, --host, 0.0.0.0, --port, "8000", --workers, "1"]
+          env:
+            - {name: GATEWAY_API_URL, value: "http://forge-gateway:8000"}
+            - {name: PG_POOL_MAX_SIZE, value: "3"}
+            - {name: REDIS_MAX_CONNECTIONS, value: "50"}
+          envFrom:
+            - configMapRef: {name: forge-config}
+            - secretRef: {name: forge-secrets}
+          ports:
+            - {name: http, containerPort: 8000}
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /live, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 300m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: output, mountPath: /app/output}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        - {name: output, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forge-web
+  namespace: forge
+  labels: {app.kubernetes.io/name: forge-web, app.kubernetes.io/part-of: forge}
+spec:
+  selector: {app.kubernetes.io/name: forge-web, app.kubernetes.io/part-of: forge}
+  ports:
+    - {name: http, port: 8000, targetPort: http}

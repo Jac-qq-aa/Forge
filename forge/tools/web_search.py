@@ -17,8 +17,14 @@ from tavily import TavilyClient
 
 logger = logging.getLogger(__name__)
 
-# Tavily API Key
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "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")
+# Tavily API Key must be supplied by the runtime environment.
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
+
+
+def _get_client() -> TavilyClient:
+    if not TAVILY_API_KEY:
+        raise RuntimeError("TAVILY_API_KEY is not configured")
+    return TavilyClient(api_key=TAVILY_API_KEY)
 
 
 @tool
@@ -37,7 +43,7 @@ def web_search(query: str, max_results: int = 5) -> str:
     logger.info(f"[WebSearch] Searching: {query}")
 
     try:
-        client = TavilyClient(api_key=TAVILY_API_KEY)
+        client = _get_client()
 
         response = client.search(
             query=query,
@@ -80,7 +86,7 @@ def web_search_with_content(query: str, max_results: int = 3) -> str:
     logger.info(f"[WebSearch] Deep searching: {query}")
 
     try:
-        client = TavilyClient(api_key=TAVILY_API_KEY)
+        client = _get_client()
 
         response = client.search(
             query=query,

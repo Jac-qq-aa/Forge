@@ -5,13 +5,15 @@
 使用 interrupt 功能在关键节点暂停，等待用户确认后继续。
 
 流程：
-1. START → rag_search → generate_outline → interrupt（等待确认大纲）
-2. 用户确认后 → generate_content → interrupt（等待确认定稿）
-3. 用户确认后 → tuning（可选循环） → finalize → END
+1. START → rag_search → research → interrupt（等待审核事实）
+2. 用户确认事实后 → generate_outline → interrupt（等待确认大纲）
+3. 用户确认大纲后 → reflection → interrupt（等待确认定稿）
+4. 用户确认后 → tuning（可选循环） → finalize → END
 
 Human-in-the-Loop 暂停点：
+- research 后：等待用户确认、排除、质疑事实或要求补充研究
 - generate_outline 后：等待用户确认/修改大纲
-- generate_content 后：等待用户确认定稿或继续微调
+- reflection 后：展示事实来源与质量报告，等待用户确认定稿或继续微调
 """
 
 import logging
@@ -25,8 +27,80 @@ from langgraph.checkpoint.memory import MemorySaver
 from forge.tools.llm_client import LLMClient
 from forge.knowledge import get_knowledge_base
 from forge.graph.checkpointer import get_checkpointer
+from forge.agents.research_agent import run_research_agent
+from forge.agents.research_types import (
+    apply_fact_reviews,
+    format_verified_facts,
+    is_fact_approved,
+)
+from forge.agents.reflection_writer import (
+    critic_node,
+    make_word_count_report,
+    run_reflection_writer,
+)
+from forge.agents.revision_agent import (
+    answer_tuning_question,
+    parse_tuning_intent,
+    reconcile_issue_resolutions,
+    run_revision_agent,
+)
+from forge.memory import get_preference_memory_service
+from forge.memory import build_experience_query, get_experience_memory_manager
+from forge.memory.service import DEFAULT_MEMORY_OWNER_ID
+from forge.reference_articles import ReferencePack, ReferenceRequest, get_reference_article_library
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_scope(state: Dict[str, Any]) -> Dict[str, str]:
+    source_article = state.get("source_article", {})
+    return {
+        "memory_owner_id": state.get("memory_owner_id") or DEFAULT_MEMORY_OWNER_ID,
+        "target_platform": str(state.get("target_platform") or "zhihu_article"),
+        "content_type": str(source_article.get("content_type") or "general"),
+    }
+
+
+async def _get_memory_context(state: Dict[str, Any], stage: str) -> str:
+    try:
+        preference_context = await get_preference_memory_service().get_preference_context(
+            stage=stage,
+            **_memory_scope(state),
+        )
+        experience_context = await get_experience_memory_manager().get_context(
+            query=build_experience_query(state, stage),
+            stage=stage,
+            **_memory_scope(state),
+        )
+        return "\n\n".join(
+            part for part in (preference_context, experience_context) if part
+        )
+    except Exception as exc:
+        logger.warning("[PreferenceMemory] Context lookup failed: %s", exc)
+        return ""
+
+
+async def _record_memory_event(
+    state: Dict[str, Any],
+    *,
+    stage: str,
+    instruction: str,
+    before_text: str,
+    after_text: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        await get_preference_memory_service().record_edit_event(
+            session_id=str(state.get("session_id") or ""),
+            stage=stage,
+            instruction=instruction,
+            before_text=before_text,
+            after_text=after_text,
+            metadata=metadata,
+            **_memory_scope(state),
+        )
+    except Exception as exc:
+        logger.warning("[PreferenceMemory] Event recording failed: %s", exc)
 
 
 # ============================================================================
@@ -41,6 +115,7 @@ class DeepModeHILState(Dict):
 
     # 会话信息
     session_id: Optional[str]
+    memory_owner_id: Optional[str]
     gateway_trace_headers: Optional[Dict[str, str]]
 
     # 原文章
@@ -48,6 +123,8 @@ class DeepModeHILState(Dict):
 
     # 用户输入
     user_input: Optional[str]
+    target_platform: Optional[str]
+    reference_pack: Optional[Dict[str, Any]]
 
     # 大纲
     outline: Optional[str]
@@ -59,6 +136,13 @@ class DeepModeHILState(Dict):
 
     # RAG 素材
     rag_context: Optional[str]
+
+    # 结构化研究与质量审查
+    research_result: Optional[Dict[str, Any]]
+    fact_decision: Optional[Literal["approve", "update", "research_more"]]
+    fact_reviews: Optional[List[Dict[str, Any]]]
+    fact_research_request: Optional[str]
+    quality_report: Optional[Dict[str, Any]]
 
     # 草稿
     draft_v1: Optional[str]
@@ -116,6 +200,25 @@ async def generate_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
     source_article = state.get("source_article", {})
     user_input = state.get("user_input", "")
     rag_context = state.get("rag_context", "")
+    approved_facts = format_verified_facts(state.get("research_result", {}))
+    preference_context = await _get_memory_context(state, "outline")
+    source_text = str(source_article.get("text") or source_article.get("content") or "")
+    try:
+        reference_pack = await get_reference_article_library().select_reference_pack(
+            ReferenceRequest(
+                topic=user_input or str(source_article.get("title") or ""),
+                target_platform=str(state.get("target_platform") or "zhihu_article"),
+                content_type=str(source_article.get("content_type") or "general"),
+                source_title=str(source_article.get("title") or ""),
+                source_excerpt=source_text[:800],
+            )
+        )
+    except Exception as exc:
+        logger.warning("[ReferenceArticles] Reference selection failed: %s", exc)
+        reference_pack = ReferencePack.empty()
+    effective_user_input = "\n\n".join(
+        part for part in (user_input, preference_context) if part
+    )
 
     prompt = f"""请根据以下信息生成文章大纲：
 
@@ -124,14 +227,24 @@ async def generate_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
 内容：{source_article.get('text', '')[:1500]}
 
 ## 用户改写需求
-{user_input}
+{effective_user_input}
 
 ## 知识库素材
 {rag_context or "无"}
 
+## 用户已确认的事实清单
+{approved_facts}
+
+## 参考文章库给出的结构与风格约束
+{reference_pack.prompt_context()}
+
 ## 大纲要求
 1. 保留原文核心观点
 2. 结构：一、二、三、四（带二级标题）
+3. 只能依据用户已确认的事实设计事实性章节
+4. 每个一级标题末尾标注该章节使用的 Fact ID，例如：一、项目背景【事实：F001,F002】
+5. 不得使用 excluded、challenged、unsupported 或未确认的事实
+6. 参考文章只用于结构角色和表达节奏，不得复制其句子、事实、数字或案例
 
 直接输出大纲：
 """
@@ -146,6 +259,7 @@ async def generate_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
         return {
             "outline": outline,
             "outline_version": outline_version,
+            "reference_pack": reference_pack.to_dict(),
             "stage": "waiting_outline",
         }
     except Exception as e:
@@ -168,6 +282,7 @@ async def wait_outline_approval_node(state: DeepModeHILState) -> Dict[str, Any]:
         "type": "outline_approval",
         "outline": state.get("outline", ""),
         "outline_version": state.get("outline_version", 1),
+        "research_result": state.get("research_result", {}),
         "message": "请确认大纲是否满意？您可以：1. 确认 2. 提出修改意见",
     })
 
@@ -301,6 +416,15 @@ async def revise_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
         logger.info(f"[Node:revise_outline] {final_outline}")
         logger.info(f"[Node:revise_outline] ========== FINAL OUTLINE END ==========")
 
+        await _record_memory_event(
+            state,
+            stage="outline",
+            instruction=feedback,
+            before_text=current_outline,
+            after_text=final_outline,
+            metadata={"outline_version": outline_version},
+        )
+
         return {
             "outline": final_outline,
             "outline_thinking": thinking,
@@ -312,64 +436,133 @@ async def revise_outline_node(state: DeepModeHILState) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-async def generate_content_node(state: DeepModeHILState) -> Dict[str, Any]:
-    """节点: 生成全文."""
-    logger.info("[Node:generate_content] Generating content...")
+def _carry_fact_reviews(
+    previous: Dict[str, Any],
+    current: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Carry explicit user decisions when supplemental research returns the same claim."""
+    review_by_claim = {
+        str(fact.get("claim", "")).strip(): fact.get("review")
+        for fact in previous.get("facts", [])
+        if str(fact.get("claim", "")).strip() and isinstance(fact.get("review"), dict)
+    }
+    for fact in current.get("facts", []):
+        previous_review = review_by_claim.get(str(fact.get("claim", "")).strip())
+        if previous_review:
+            fact["review"] = dict(previous_review)
+    return current
 
-    outline = state.get("outline", "")
+
+async def research_node(state: DeepModeHILState) -> Dict[str, Any]:
+    """节点: 在大纲生成前建立带来源的结构化事实清单。"""
+    logger.info("[Node:research] Planning and gathering evidence...")
     source_article = state.get("source_article", {})
-    rag_context = state.get("rag_context", "")
+    supplemental_request = str(state.get("fact_research_request") or "").strip()
+    research_brief = "\n".join(
+        part
+        for part in (
+            f"文章主题：{source_article.get('title', '')}",
+            f"用户写作要求：{state.get('user_input', '')}",
+            f"补充研究要求：{supplemental_request}" if supplemental_request else "",
+        )
+        if part
+    )
+    result = await run_research_agent(
+        outline=research_brief,
+        raw_content=source_article,
+        user_input=state.get("user_input", ""),
+        require_user_review=True,
+        rag_context=state.get("rag_context", ""),
+    )
+    previous_result = state.get("research_result", {})
+    if supplemental_request and previous_result:
+        result = _carry_fact_reviews(previous_result, result)
+    return {
+        "research_result": result,
+        "fact_research_request": None,
+        "stage": "waiting_facts",
+    }
 
-    # 获取动态模板（可选）
-    template_id = None
-    try:
-        from forge.evolution import get_prompt_manager, ensure_default_templates
-        await ensure_default_templates()
-        prompt_manager = get_prompt_manager()
-        template = await prompt_manager.get_active_template("deep_content_generator")
-        system_prompt = template.get("system_prompt", "")
-        user_prompt_template = template.get("user_prompt_template", "")
-        template_id = template.get("id")
 
-        # 格式化
-        variables = {
-            "outline": outline,
-            "title": source_article.get("title", ""),
-            "raw_content": source_article.get("text", "")[:2000],
-            "rag_context": rag_context or "无",
-            "quality_context": "无参考案例",
-        }
-        user_prompt = prompt_manager.safe_format_template(user_prompt_template, variables)
-    except Exception as e:
-        logger.warning(f"[Node:generate_content] Evolution unavailable: {e}")
-        system_prompt = ""
-        user_prompt = f"""请根据大纲生成完整文章：
+async def wait_fact_approval_node(state: DeepModeHILState) -> Dict[str, Any]:
+    """节点: 展示事实与证据并等待用户审核。"""
+    logger.info("[Node:wait_fact_approval] Waiting for user fact review...")
+    research_result = state.get("research_result", {})
+    user_response = interrupt({
+        "type": "fact_approval",
+        "research_result": research_result,
+        "message": "请审核事实清单。您可以确认、排除、质疑或要求补充研究。",
+    })
 
-## 大纲
-{outline}
+    decision = str(user_response.get("decision") or "update")
+    reviews = user_response.get("reviews") or []
+    supplemental_request = str(user_response.get("research_request") or "").strip()
+    updated_result, review_errors = apply_fact_reviews(
+        research_result,
+        reviews,
+        accept_all=decision == "approve" and not reviews,
+    )
+    accepted_count = sum(
+        1 for fact in updated_result.get("facts", []) if is_fact_approved(fact)
+    )
+    unresolved = [
+        fact["fact_id"]
+        for fact in updated_result.get("facts", [])
+        if fact["review"]["decision"] in {"challenged", "needs_more_research"}
+    ]
 
-## 原文章内容
-标题：{source_article.get('title', '')}
-内容：{source_article.get('text', '')[:2000]}
+    effective_decision = decision
+    if decision == "approve" and (review_errors or unresolved or accepted_count == 0):
+        effective_decision = "update"
+    if decision == "research_more" and not supplemental_request:
+        review_comments = [
+            str(review.get("comment") or "").strip()
+            for review in reviews
+            if review.get("action") in {"challenged", "needs_more_research"}
+        ]
+        supplemental_request = "；".join(comment for comment in review_comments if comment)
+    if review_errors:
+        updated_result["warnings"].extend(review_errors)
 
-直接输出文章：
-"""
+    logger.info(
+        "[Node:wait_fact_approval] decision=%s accepted=%s unresolved=%s errors=%s",
+        effective_decision,
+        accepted_count,
+        len(unresolved),
+        len(review_errors),
+    )
+    return {
+        "research_result": updated_result,
+        "fact_decision": effective_decision,
+        "fact_reviews": reviews,
+        "fact_research_request": supplemental_request or None,
+        "stage": "facts_approved" if effective_decision == "approve" else "waiting_facts",
+    }
 
-    try:
-        llm = LLMClient()
-        draft = await llm.chat_with_retry(user_prompt, system_prompt)
 
-        logger.info(f"[Node:generate_content] Generated: {len(draft)} chars")
-
-        return {
-            "draft_v1": draft,
-            "current_draft": draft,
-            "template_id": template_id,
-            "stage": "waiting_content",
-        }
-    except Exception as e:
-        logger.error(f"[Node:generate_content] Failed: {e}")
-        return {"error": str(e)}
+async def reflection_node(state: DeepModeHILState) -> Dict[str, Any]:
+    """节点: 基于事实注册表生成草稿并执行结构化质量门。"""
+    logger.info("[Node:reflection] Generating and evaluating draft...")
+    preference_context = await _get_memory_context(state, "article")
+    effective_user_input = "\n\n".join(
+        part
+        for part in (state.get("user_input", ""), preference_context)
+        if part
+    )
+    result = await run_reflection_writer(
+        research_result=state.get("research_result", {}),
+        outline=state.get("outline", ""),
+        raw_content=state.get("source_article", {}),
+        target_platform=str(state.get("target_platform") or "zhihu_article"),
+        user_input=effective_user_input,
+        reference_pack=ReferencePack.from_dict(state.get("reference_pack")),
+    )
+    return {
+        "draft_v1": result["draft"],
+        "current_draft": result["draft"],
+        "quality_report": result,
+        "stage": "waiting_content",
+    }
 
 
 async def wait_content_approval_node(state: DeepModeHILState) -> Dict[str, Any]:
@@ -385,6 +578,9 @@ async def wait_content_approval_node(state: DeepModeHILState) -> Dict[str, Any]:
     user_response = interrupt({
         "type": "content_approval",
         "draft": state.get("current_draft", ""),
+        "research_result": state.get("research_result", {}),
+        "quality_report": state.get("quality_report", {}),
+        "tuning_messages": state.get("tuning_messages", []),
         "message": "请确认文章是否满意？您可以：1. 定稿 2. 提出修改意见",
     })
 
@@ -401,8 +597,8 @@ async def wait_content_approval_node(state: DeepModeHILState) -> Dict[str, Any]:
 
 
 async def tuning_node(state: DeepModeHILState) -> Dict[str, Any]:
-    """节点: 微调文章."""
-    logger.info("[Node:tuning] Processing tuning request...")
+    """Parse user intent and route edits through the shared Revision Agent."""
+    logger.info("[Node:tuning] Parsing tuning intent...")
 
     current_draft = state.get("current_draft", "")
     tuning_request = state.get("tuning_request", "")
@@ -410,43 +606,152 @@ async def tuning_node(state: DeepModeHILState) -> Dict[str, Any]:
     if not tuning_request:
         return {}
 
-    full_message = f"""## 当前文章
-{current_draft}
-
-## 用户请求
-{tuning_request}
-
-## 回复格式
-- 如果用户要求修改：直接返回完整修改后文章
-- 如果用户只是提问：用【回答】开头
-
-请处理：
-"""
-
     try:
-        llm = LLMClient()
-        response = await llm.chat_with_retry(full_message)
-
-        # 判断是否是修改
-        is_question = response.startswith("【回答】")
-
-        # 更新历史
+        quality_report = state.get("quality_report", {})
+        generation_plan = quality_report.get("generation_plan", {})
+        research_result = state.get("research_result", {})
+        intent = await parse_tuning_intent(
+            tuning_request,
+            generation_plan,
+            research_result,
+        )
         tuning_messages = state.get("tuning_messages", [])
+        if intent["intent"] == "question":
+            response = await answer_tuning_question(intent["question"], research_result)
+            tuning_messages.append({
+                "request": tuning_request,
+                "response": response,
+                "is_question": True,
+                "intent": intent,
+            })
+            return {
+                "current_draft": current_draft,
+                "quality_report": {**quality_report, "last_tuning_intent": intent},
+                "tuning_messages": tuning_messages,
+                "tuning_request": None,
+                "stage": "waiting_content",
+            }
+
+        if intent["intent"] == "clarify":
+            response = intent["clarification_question"]
+            tuning_messages.append({
+                "request": tuning_request,
+                "response": response,
+                "is_question": True,
+                "intent": intent,
+            })
+            return {
+                "current_draft": current_draft,
+                "quality_report": {**quality_report, "last_tuning_intent": intent},
+                "tuning_messages": tuning_messages,
+                "tuning_request": None,
+                "stage": "waiting_content",
+            }
+
+        revision_cycle = int(quality_report.get("revision_cycles", 0)) + 1
+        agent_result = await run_revision_agent(
+            draft=current_draft,
+            research_result=research_result,
+            raw_content=state.get("source_article", {}),
+            generation_plan=generation_plan,
+            section_reports=quality_report.get("section_reports", []),
+            writing_memory=quality_report.get("writing_memory", {}),
+            source="user",
+            revision_cycle=revision_cycle,
+            tasks=intent["tasks"],
+        )
+        updated_draft = agent_result["draft"]
+        word_count = make_word_count_report(updated_draft, agent_result["generation_plan"])
+        agent_issues = []
+        if agent_result["status"] in {"blocked", "needs_review"}:
+            agent_issues.append({
+                "issue_id": "I001",
+                "issue_type": "revision_agent_error",
+                "severity": "high",
+                "span": "",
+                "fact_id": "",
+                "instruction": "Revision Agent 未能安全完成用户修改："
+                + "；".join(agent_result["errors"] or agent_result["unresolved_issues"]),
+            })
+        review = await critic_node({
+            "current_draft": updated_draft,
+            "research_result": research_result,
+            "outline": state.get("outline", ""),
+            "raw_content": state.get("source_article", {}),
+            "target_platform": str(state.get("target_platform") or "zhihu_article"),
+            "user_input": state.get("user_input", ""),
+            "generation_plan": agent_result["generation_plan"],
+            "section_reports": agent_result["section_reports"],
+            "writing_memory": agent_result["writing_memory"],
+            "word_count": word_count,
+            "issues": agent_issues,
+        })
+        response = (
+            f"Revision Agent 执行了 {agent_result['tool_action_count']} 个动作；"
+            f"Critic 状态：{review.get('status', 'needs_review')}。"
+        )
         tuning_messages.append({
             "request": tuning_request,
             "response": response,
-            "is_question": is_question,
+            "is_question": False,
+            "intent": intent,
+            "revision_plan": agent_result["revision_plan"],
         })
+        resolutions, unresolved = reconcile_issue_resolutions(
+            agent_result["issue_resolution_log"],
+            review.get("issues", []),
+            bool(review.get("approved", False)),
+        )
+        quality_report = {
+            **quality_report,
+            "status": review.get("status", "needs_review"),
+            "approved": review.get("approved", False),
+            "scores": review.get("scores", {}),
+            "issues": review.get("issues", []),
+            "draft_facts": review.get("draft_facts", []),
+            "fact_match_summary": review.get("fact_match_summary", {}),
+            "verification_log": review.get("verification_log", []),
+            "generation_plan": agent_result["generation_plan"],
+            "word_count": word_count,
+            "section_reports": agent_result["section_reports"],
+            "writing_memory": agent_result["writing_memory"],
+            "revision_plan": agent_result["revision_plan"],
+            "revision_action_log": quality_report.get("revision_action_log", [])
+            + agent_result["revision_action_log"],
+            "issue_resolution_log": quality_report.get("issue_resolution_log", [])
+            + resolutions,
+            "revision_cycles": revision_cycle,
+            "tool_action_count": int(quality_report.get("tool_action_count", 0))
+            + agent_result["tool_action_count"],
+            "unresolved_issues": sorted(
+                set(agent_result["unresolved_issues"]) | set(unresolved)
+            ),
+            "last_tuning_intent": intent,
+            "checked_after_tuning": True,
+        }
 
-        # 如果是修改，更新草稿
-        updated_draft = current_draft
-        if not is_question and len(response) > len(current_draft) * 0.3:
-            updated_draft = response
+        logger.info(
+            "[Node:tuning] intent=edit actions=%s critic=%s",
+            agent_result["tool_action_count"],
+            review.get("status"),
+        )
 
-        logger.info(f"[Node:tuning] Response: {len(response)} chars, is_question={is_question}")
+        await _record_memory_event(
+            state,
+            stage="article",
+            instruction=tuning_request,
+            before_text=current_draft,
+            after_text=updated_draft,
+            metadata={
+                "intent": intent.get("intent"),
+                "revision_cycle": revision_cycle,
+                "critic_status": review.get("status"),
+            },
+        )
 
         return {
             "current_draft": updated_draft,
+            "quality_report": quality_report,
             "tuning_messages": tuning_messages,
             "tuning_request": None,  # 清空当前请求
             "stage": "waiting_content",  # 再次等待确认
@@ -461,6 +766,18 @@ async def finalize_node(state: DeepModeHILState) -> Dict[str, Any]:
     logger.info("[Node:finalize] Finalizing...")
 
     current_draft = state.get("current_draft", "")
+    session_id = str(state.get("session_id") or "")
+    try:
+        learned_count = await get_preference_memory_service().learn_from_finalized_session(
+            session_id
+        )
+        logger.info(
+            "[PreferenceMemory] Learned %s edit events from session %s",
+            learned_count,
+            session_id,
+        )
+    except Exception as exc:
+        logger.warning("[PreferenceMemory] Finalization learning failed: %s", exc)
 
     return {
         "final_draft": current_draft,
@@ -477,11 +794,21 @@ def route_after_outline(state: DeepModeHILState) -> str:
     decision = state.get("user_decision", "")
 
     if decision == "approve":
-        return "generate_content"
+        return "reflection"
     elif decision == "reject":
         return "revise_outline"
     else:
-        return "generate_content"  # 默认继续
+        return "reflection"  # 默认继续
+
+
+def route_after_facts(state: DeepModeHILState) -> str:
+    """事实审核后的路由。"""
+    decision = state.get("fact_decision", "")
+    if decision == "approve":
+        return "generate_outline"
+    if decision == "research_more":
+        return "research"
+    return "wait_fact_approval"
 
 
 def route_after_content(state: DeepModeHILState) -> str:
@@ -515,17 +842,29 @@ def build_hil_graph() -> StateGraph:
 
     # 添加节点
     graph.add_node("rag_search", rag_search_node)
+    graph.add_node("research", research_node)
+    graph.add_node("wait_fact_approval", wait_fact_approval_node)
     graph.add_node("generate_outline", generate_outline_node)
     graph.add_node("wait_outline_approval", wait_outline_approval_node)
     graph.add_node("revise_outline", revise_outline_node)
-    graph.add_node("generate_content", generate_content_node)
+    graph.add_node("reflection", reflection_node)
     graph.add_node("wait_content_approval", wait_content_approval_node)
     graph.add_node("tuning", tuning_node)
     graph.add_node("finalize", finalize_node)
 
     # 添加边
     graph.add_edge(START, "rag_search")
-    graph.add_edge("rag_search", "generate_outline")
+    graph.add_edge("rag_search", "research")
+    graph.add_edge("research", "wait_fact_approval")
+    graph.add_conditional_edges(
+        "wait_fact_approval",
+        route_after_facts,
+        {
+            "generate_outline": "generate_outline",
+            "research": "research",
+            "wait_fact_approval": "wait_fact_approval",
+        }
+    )
     graph.add_edge("generate_outline", "wait_outline_approval")
 
     # 大纲确认后的条件路由
@@ -533,7 +872,7 @@ def build_hil_graph() -> StateGraph:
         "wait_outline_approval",
         route_after_outline,
         {
-            "generate_content": "generate_content",
+            "reflection": "reflection",
             "revise_outline": "revise_outline",
         }
     )
@@ -541,8 +880,8 @@ def build_hil_graph() -> StateGraph:
     # 修改大纲后，直接等待用户确认（不再重新生成）
     graph.add_edge("revise_outline", "wait_outline_approval")
 
-    # 内容生成后等待确认
-    graph.add_edge("generate_content", "wait_content_approval")
+    # 大纲确认后通过 Reflection 生成并审查草稿
+    graph.add_edge("reflection", "wait_content_approval")
 
     # 内容确认后的条件路由
     graph.add_conditional_edges(
@@ -622,6 +961,8 @@ async def start_generation(
     thread_id: str,
     source_article: Dict[str, str],
     user_input: str,
+    target_platform: str = "zhihu_article",
+    memory_owner_id: str = DEFAULT_MEMORY_OWNER_ID,
 ) -> Dict[str, Any]:
     """启动生成流程（运行到第一个 interrupt）.
 
@@ -631,7 +972,7 @@ async def start_generation(
         user_input: 用户改写需求
 
     Returns:
-        interrupt 返回值（大纲内容）
+        interrupt 返回值（事实清单）
     """
     app = await get_hil_app()
 
@@ -641,8 +982,10 @@ async def start_generation(
 
     initial_state = {
         "session_id": thread_id,
+        "memory_owner_id": memory_owner_id,
         "source_article": source_article,
         "user_input": user_input,
+        "target_platform": target_platform,
     }
 
     # 运行到第一个 interrupt
@@ -652,7 +995,14 @@ async def start_generation(
     snapshot = await app.aget_state(config)
     if snapshot.next:  # 有待执行的节点 = 遇到了 interrupt
         interrupt_value = snapshot.values
-        logger.info(f"[HIL] Interrupted at outline approval: {interrupt_value.get('outline', '')[:100]}...")
+        interrupt_type = interrupt_value.get("type", "fact_approval")
+        logger.info("[HIL] Interrupted at %s", interrupt_type)
+        if interrupt_type == "fact_approval":
+            return {
+                "status": "interrupted",
+                "interrupt_type": "fact_approval",
+                "research_result": interrupt_value.get("research_result", {}),
+            }
         return {
             "status": "interrupted",
             "interrupt_type": "outline_approval",
@@ -707,6 +1057,9 @@ async def approve_outline(
                 "status": "interrupted",
                 "interrupt_type": "content_approval",
                 "draft": interrupt_value.get("current_draft", ""),
+                "research_result": interrupt_value.get("research_result", {}),
+                "quality_report": interrupt_value.get("quality_report", {}),
+                "tuning_messages": interrupt_value.get("tuning_messages", []),
             }
         elif stage == "waiting_outline":
             return {
@@ -716,6 +1069,41 @@ async def approve_outline(
                 "outline_version": interrupt_value.get("outline_version", 1),
             }
 
+    return {"status": "completed", "result": result}
+
+
+async def approve_facts(
+    thread_id: str,
+    decision: str = "approve",
+    reviews: Optional[List[Dict[str, Any]]] = None,
+    research_request: str = "",
+) -> Dict[str, Any]:
+    """提交事实审核结果并返回下一个 HIL 暂停点。"""
+    app = await get_hil_app()
+    config = {"configurable": {"thread_id": thread_id}}
+    resume_value = {
+        "decision": decision,
+        "reviews": reviews or [],
+        "research_request": research_request,
+    }
+    result = await app.ainvoke(Command(resume=resume_value), config)
+    snapshot = await app.aget_state(config)
+    if snapshot.next:
+        interrupt_value = snapshot.values
+        stage = interrupt_value.get("stage", "")
+        if stage != "waiting_outline":
+            return {
+                "status": "interrupted",
+                "interrupt_type": "fact_approval",
+                "research_result": interrupt_value.get("research_result", {}),
+            }
+        if stage == "waiting_outline":
+            return {
+                "status": "interrupted",
+                "interrupt_type": "outline_approval",
+                "outline": interrupt_value.get("outline", ""),
+                "outline_version": interrupt_value.get("outline_version", 1),
+            }
     return {"status": "completed", "result": result}
 
 
@@ -760,6 +1148,9 @@ async def approve_content(
             "status": "interrupted",
             "interrupt_type": "content_approval",
             "draft": interrupt_value.get("current_draft", ""),
+            "research_result": interrupt_value.get("research_result", {}),
+            "quality_report": interrupt_value.get("quality_report", {}),
+            "tuning_messages": interrupt_value.get("tuning_messages", []),
         }
 
     # 定稿完成

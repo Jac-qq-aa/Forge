@@ -45,10 +45,13 @@ def parse_count_text(value) -> int:
 class ZhihuScraper:
     """Async Zhihu scraper with persistent browser context."""
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, profile_dir: str | Path | None = None):
         self.headless = headless
+        self.profile_dir = Path(profile_dir or BROWSER_DATA_DIR)
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.playwright = None
         self.context: BrowserContext = None
+        self.page = None
 
     async def __aenter__(self):
         logger.info("[ZhihuScraper] Starting browser with persistent context")
@@ -56,7 +59,7 @@ class ZhihuScraper:
 
         # Use persistent context
         self.context = await self.playwright.chromium.launch_persistent_context(
-            user_data_dir=BROWSER_DATA_DIR,
+            user_data_dir=str(self.profile_dir),
             headless=self.headless,
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',

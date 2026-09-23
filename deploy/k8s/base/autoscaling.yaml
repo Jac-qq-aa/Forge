@@ -1,0 +1,129 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: forge-gateway
+  namespace: forge
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: forge-gateway}
+  minReplicas: 3
+  maxReplicas: 30
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - {type: Percent, value: 100, periodSeconds: 60}
+        - {type: Pods, value: 4, periodSeconds: 60}
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies: [{type: Percent, value: 25, periodSeconds: 60}]
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 65}
+    - type: Resource
+      resource:
+        name: memory
+        target: {type: Utilization, averageUtilization: 75}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: forge-web
+  namespace: forge
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: forge-web}
+  minReplicas: 3
+  maxReplicas: 20
+  behavior:
+    scaleUp:
+      policies: [{type: Percent, value: 100, periodSeconds: 60}]
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies: [{type: Percent, value: 25, periodSeconds: 60}]
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 65}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: forge-workflow-worker
+  namespace: forge
+spec:
+  scaleTargetRef: {name: forge-workflow-worker}
+  minReplicaCount: 2
+  maxReplicaCount: 100
+  pollingInterval: 15
+  cooldownPeriod: 600
+  fallback: {failureThreshold: 3, replicas: 4}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies: [{type: Percent, value: 20, periodSeconds: 60}]
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+        metricName: forge_workflow_rocketmq_lag
+        query: sum(rocketmq_message_accumulation{group="forge-workflow-workers",topic="forge-workflow-jobs"})
+        threshold: "20"
+        activationThreshold: "1"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: forge-generation-worker
+  namespace: forge
+spec:
+  scaleTargetRef: {name: forge-generation-worker}
+  minReplicaCount: 2
+  maxReplicaCount: 100
+  pollingInterval: 15
+  cooldownPeriod: 600
+  fallback: {failureThreshold: 3, replicas: 4}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies: [{type: Percent, value: 20, periodSeconds: 60}]
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+        metricName: forge_generation_rocketmq_lag
+        query: sum(rocketmq_message_accumulation{group="forge-generation-workers",topic=~"forge-generation-(tasks|retries)"})
+        threshold: "8"
+        activationThreshold: "1"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: forge-zhihu-worker
+  namespace: forge
+spec:
+  scaleTargetRef: {name: forge-zhihu-worker}
+  minReplicaCount: 2
+  maxReplicaCount: 30
+  pollingInterval: 30
+  cooldownPeriod: 900
+  fallback: {failureThreshold: 3, replicas: 2}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 900
+          policies: [{type: Pods, value: 1, periodSeconds: 120}]
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+        metricName: forge_zhihu_rocketmq_lag
+        query: sum(rocketmq_message_accumulation{group="forge-zhihu-workers",topic="forge-zhihu-jobs"})
+        threshold: "4"
+        activationThreshold: "1"

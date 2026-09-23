@@ -5,10 +5,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 # Qwen LLM Configuration (OpenAI-compatible DashScope API)
 QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
-QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.6-plus")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.7-max")
 
 # Claude/Anthropic compatibility aliases for legacy config names.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", QWEN_API_KEY)
@@ -19,7 +26,7 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", QWEN_MODEL)
 # 使用同一个 API Key，但指定更强的模型进行判断
 JUDGE_API_KEY = os.getenv("JUDGE_API_KEY", QWEN_API_KEY)  # 默认使用 Qwen API Key
 JUDGE_API_URL = os.getenv("JUDGE_API_URL", QWEN_API_URL)  # 默认使用 Qwen API URL
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "qwen3.6-plus")  # 判断模型，默认使用同一 Qwen 3.6 模型
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "qwen3.7-max")  # 判断模型，默认使用同一 Qwen 3.7 模型
 
 # LangSmith Configuration (工作流追踪和可视化)
 LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
@@ -40,10 +47,8 @@ SCRIPT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ou
 COOKIES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "cookies", "xhs_cookies.json")
 
 # Control parameters
-MAX_REVISIONS = 3
-MAX_HUMANIZE_REVISIONS = 3  # 去AI化最大迭代次数
-AI_THRESHOLD = 0.7  # AI率阈值，超过此值需要人性化改写
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "180"))
+LLM_MAX_ATTEMPTS = int(os.getenv("LLM_MAX_ATTEMPTS", "2"))
 PLAYWRIGHT_TIMEOUT = 30000  # ms
 
 # Supported target platforms
@@ -66,7 +71,12 @@ TARGET_PLATFORM_OPTIONS = ["zhihu_article", "xhs_video", "wechat_article"]
 REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
+REDIS_SSL: bool = _env_bool("REDIS_SSL")
 REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "200"))
+REDIS_SOCKET_TIMEOUT_SECONDS: float = float(
+    os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "2")
+)
 
 # Session TTL (30 minutes)
 SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
@@ -81,7 +91,11 @@ PG_HOST: str = os.getenv("PG_HOST", "localhost")
 PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
 PG_USER: str = os.getenv("PG_USER", "")  # 必填，无默认值
 PG_PASSWORD: str = os.getenv("PG_PASSWORD", "")  # 必填，无默认值
+PG_SSL: bool = _env_bool("PG_SSL")
 PG_DATABASE: str = os.getenv("PG_DATABASE", "forge")
+PG_POOL_MIN_SIZE: int = int(os.getenv("PG_POOL_MIN_SIZE", "2"))
+PG_POOL_MAX_SIZE: int = int(os.getenv("PG_POOL_MAX_SIZE", "10"))
+PG_STATEMENT_CACHE_SIZE: int = int(os.getenv("PG_STATEMENT_CACHE_SIZE", "0"))
 
 # 配置校验（启动时检查必要配置）
 def validate_db_config():

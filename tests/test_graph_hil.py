@@ -2,7 +2,7 @@
 
 测试用例：
 1. AsyncPostgresSaver 初始化
-2. 完整流程：start_generation → approve_outline → approve_content
+2. 完整流程：start_generation → approve_facts → approve_outline → approve_content
 3. Fallback 到 MemorySaver
 4. WebSocket 重连恢复
 5. 并发多个 session
@@ -19,10 +19,12 @@ from forge.deep_mode.graph_hil import (
     get_hil_graph,
     build_hil_graph,
     start_generation,
+    approve_facts,
     approve_outline,
     approve_content,
     get_current_state,
     reset_thread,
+    tuning_node,
     DeepModeHILState,
 )
 
@@ -54,6 +56,112 @@ def unique_thread_id():
     return f"test_thread_{uuid.uuid4().hex[:8]}"
 
 
+@pytest.fixture(autouse=True)
+def mock_research_and_reflection():
+    research_result = {
+        "status": "complete", "tasks": [],
+        "evidence": [{
+            "evidence_id": "E001", "task_id": "source", "source": "锐博官网",
+            "title": "测试文章", "url": "https://example.com/test-article",
+            "published_at": "", "retrieved_at": "now", "excerpt": "测试正文",
+            "source_type": "source_article", "authority_score": 1.0,
+            "relevance_score": 1.0, "content_hash": "hash",
+        }],
+        "facts": [{
+            "fact_id": "F001", "task_id": "source", "section_id": "S01",
+            "claim": "测试事实", "status": "verified", "confidence": 1.0,
+            "review": {
+                "decision": "pending", "comment": "", "priority": "normal",
+                "reviewed_at": "",
+            },
+            "evidence_ids": ["E001"], "sources": [{
+                "evidence_id": "E001", "source": "锐博官网", "title": "测试文章",
+                "url": "https://example.com/test-article", "published_at": "",
+                "retrieved_at": "now",
+            }],
+        }],
+        "coverage": 1.0, "warnings": [], "generated_at": "now",
+    }
+    reflection_result = {
+        "status": "approved", "draft": "研究后生成的完整文章", "approved": True,
+        "revision_attempts": 0,
+        "scores": {"grounding": 1.0, "completeness": 1.0, "structure": 1.0, "style": 1.0},
+        "issues": [], "verification_log": [],
+        "generation_plan": {
+            "mode": "single_pass", "reason": "短文", "target_chars": 800,
+            "min_chars": 736, "max_chars": 864,
+            "counting_method": "可见字符", "sections": [],
+        },
+        "writing_memory": {
+            "thesis": "测试", "terminology": {}, "used_fact_ids": ["F001"],
+            "section_summaries": {}, "open_threads": [], "previous_tail": "",
+            "actual_chars": 800, "remaining_target_chars": 0,
+        },
+        "section_reports": [],
+        "word_count": {
+            "target_chars": 800, "min_chars": 736, "max_chars": 864,
+            "actual_chars": 800, "deviation": 0.0, "status": "within_budget",
+        },
+        "generator_action_log": [], "generator_tool_action_count": 3,
+        "generator_model_call_count": 4, "generator_stop_reason": "finish_generation",
+        "revision_plan": {"revision_cycle": 0, "source": "critic", "tasks": [], "max_actions": 8},
+        "revision_action_log": [], "issue_resolution_log": [], "revision_cycles": 0,
+        "tool_action_count": 0, "unresolved_issues": [],
+    }
+    tuning_intent = {
+        "intent": "edit", "original_request": "修改第二段", "question": "",
+        "clarification_question": "", "reason": "测试",
+        "tasks": [{
+            "task_id": "R001", "source": "user", "source_issue_ids": [],
+            "operation_hints": ["rewrite_section"], "target_section_ids": ["S01"],
+            "target_fact_ids": ["F001"], "requirements": ["修改第二段"],
+            "constraints": {
+                "target_chars": None, "tolerance": 0.1, "target_tone": "",
+                "preserve_facts": True, "preserve_other_sections": True,
+            },
+            "priority": 3, "status": "pending",
+            "validation_rules": ["scope_boundary", "critic"],
+        }],
+    }
+    revision_result = {
+        "status": "revised", "draft": "Revision Agent 微调后的文章",
+        "generation_plan": reflection_result["generation_plan"],
+        "section_reports": reflection_result["section_reports"],
+        "writing_memory": reflection_result["writing_memory"],
+        "revision_plan": {"revision_cycle": 1, "source": "user", "tasks": [], "max_actions": 8},
+        "revision_action_log": [], "issue_resolution_log": [], "tool_action_count": 1,
+        "unresolved_issues": [], "errors": [],
+    }
+    mock_kb = MagicMock()
+    mock_kb.get_context_for_topic.return_value = ""
+    with patch(
+        "forge.deep_mode.graph_hil.run_research_agent",
+        new=AsyncMock(return_value=research_result),
+    ), patch(
+        "forge.deep_mode.graph_hil.run_reflection_writer",
+        new=AsyncMock(return_value=reflection_result),
+    ), patch(
+        "forge.deep_mode.graph_hil.critic_node",
+        new=AsyncMock(return_value={
+            "status": "approved", "approved": True,
+            "scores": reflection_result["scores"], "issues": [], "verification_log": [],
+        }),
+    ), patch(
+        "forge.deep_mode.graph_hil.get_knowledge_base",
+        return_value=mock_kb,
+    ), patch(
+        "forge.deep_mode.graph_hil.parse_tuning_intent",
+        new=AsyncMock(return_value=tuning_intent),
+    ), patch(
+        "forge.deep_mode.graph_hil.run_revision_agent",
+        new=AsyncMock(return_value=revision_result),
+    ), patch(
+        "forge.deep_mode.graph_hil.answer_tuning_question",
+        new=AsyncMock(return_value="事实问答"),
+    ):
+        yield
+
+
 # ============================================================================
 # 测试 1: Graph 构建
 # ============================================================================
@@ -76,10 +184,12 @@ class TestGraphBuild:
 
         expected_nodes = [
             "rag_search",
+            "research",
+            "wait_fact_approval",
             "generate_outline",
             "wait_outline_approval",
             "revise_outline",
-            "generate_content",
+            "reflection",
             "wait_content_approval",
             "tuning",
             "finalize",
@@ -91,7 +201,63 @@ class TestGraphBuild:
     def test_graph_nodes_count(self):
         """测试节点数量。"""
         graph = build_hil_graph()
-        assert len(graph.nodes) == 8
+        assert len(graph.nodes) == 10
+
+
+class TestTuningIntentRouting:
+    @pytest.mark.asyncio
+    async def test_question_does_not_modify_draft(self):
+        intent = {
+            "intent": "question", "original_request": "2002年来源是什么？",
+            "tasks": [], "question": "2002年来源是什么？",
+            "clarification_question": "", "reason": "询问来源",
+        }
+        with patch(
+            "forge.deep_mode.graph_hil.parse_tuning_intent",
+            new=AsyncMock(return_value=intent),
+        ), patch(
+            "forge.deep_mode.graph_hil.answer_tuning_question",
+            new=AsyncMock(return_value="来自锐博官网 https://example.com"),
+        ), patch(
+            "forge.deep_mode.graph_hil.run_revision_agent",
+            new=AsyncMock(),
+        ) as revision_agent:
+            result = await tuning_node({
+                "current_draft": "原文章",
+                "tuning_request": "2002年来源是什么？",
+                "research_result": {"facts": []},
+                "quality_report": {"generation_plan": {"sections": []}},
+            })
+
+        assert result["current_draft"] == "原文章"
+        assert result["tuning_messages"][-1]["is_question"] is True
+        revision_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_clarify_does_not_modify_draft(self):
+        intent = {
+            "intent": "clarify", "original_request": "第二部分不太对",
+            "tasks": [], "question": "",
+            "clarification_question": "请说明要调整事实、字数还是语气。",
+            "reason": "目标不明确",
+        }
+        with patch(
+            "forge.deep_mode.graph_hil.parse_tuning_intent",
+            new=AsyncMock(return_value=intent),
+        ), patch(
+            "forge.deep_mode.graph_hil.run_revision_agent",
+            new=AsyncMock(),
+        ) as revision_agent:
+            result = await tuning_node({
+                "current_draft": "原文章",
+                "tuning_request": "第二部分不太对",
+                "research_result": {"facts": []},
+                "quality_report": {"generation_plan": {"sections": []}},
+            })
+
+        assert result["current_draft"] == "原文章"
+        assert "请说明" in result["tuning_messages"][-1]["response"]
+        revision_agent.assert_not_awaited()
 
 
 # ============================================================================
@@ -151,13 +317,13 @@ class TestFullWorkflow:
     """测试完整 Human-in-the-Loop 流程。"""
 
     @pytest.mark.asyncio
-    async def test_start_generation_interrupts_at_outline_approval(
+    async def test_start_generation_interrupts_at_fact_approval(
         self,
         sample_source_article,
         sample_user_input,
         unique_thread_id,
     ):
-        """测试 start_generation 在大纲确认处 interrupt。"""
+        """测试 start_generation 在事实审核处 interrupt。"""
         # 模拟 LLM 响应
         mock_llm_response = """一、引言
   1. 背景介绍
@@ -188,11 +354,10 @@ class TestFullWorkflow:
                     user_input=sample_user_input,
                 )
 
-        # 验证 interrupt 在大纲确认处
+        # 验证 interrupt 在事实审核处
         assert result["status"] == "interrupted"
-        assert result["interrupt_type"] == "outline_approval"
-        assert "outline" in result
-        assert len(result["outline"]) > 0
+        assert result["interrupt_type"] == "fact_approval"
+        assert result["research_result"]["facts"]
 
     @pytest.mark.asyncio
     async def test_approve_outline_continues_to_content_generation(
@@ -231,6 +396,9 @@ class TestFullWorkflow:
                     user_input=sample_user_input,
                 )
 
+                fact_result = await approve_facts(thread_id=unique_thread_id)
+                assert fact_result["interrupt_type"] == "outline_approval"
+
                 # 确认大纲（继续生成内容）
                 approve_result = await approve_outline(
                     thread_id=unique_thread_id,
@@ -241,6 +409,11 @@ class TestFullWorkflow:
         assert approve_result["status"] == "interrupted"
         assert approve_result["interrupt_type"] == "content_approval"
         assert "draft" in approve_result
+        assert approve_result["research_result"]["facts"][0]["sources"][0]["url"]
+        assert approve_result["quality_report"]["approved"] is True
+        assert approve_result["quality_report"]["generation_plan"]["mode"] == "single_pass"
+        assert approve_result["quality_report"]["word_count"]["status"] == "within_budget"
+        assert approve_result["quality_report"]["revision_cycles"] == 0
 
     @pytest.mark.asyncio
     async def test_approve_outline_with_feedback_revises_outline(
@@ -276,6 +449,7 @@ class TestFullWorkflow:
                     source_article=sample_source_article,
                     user_input=sample_user_input,
                 )
+                await approve_facts(thread_id=unique_thread_id)
 
                 # 提出修改意见
                 approve_result = await approve_outline(
@@ -321,6 +495,7 @@ class TestFullWorkflow:
                     source_article=sample_source_article,
                     user_input=sample_user_input,
                 )
+                await approve_facts(thread_id=unique_thread_id)
                 await approve_outline(thread_id=unique_thread_id)
 
                 # 定稿
@@ -368,6 +543,7 @@ class TestFullWorkflow:
                     source_article=sample_source_article,
                     user_input=sample_user_input,
                 )
+                await approve_facts(thread_id=unique_thread_id)
                 await approve_outline(thread_id=unique_thread_id)
 
                 # 第一次微调
@@ -379,6 +555,8 @@ class TestFullWorkflow:
         # 验证再次等待内容确认
         assert tuning_result["status"] == "interrupted"
         assert tuning_result["interrupt_type"] == "content_approval"
+        assert tuning_result["tuning_messages"][-1]["is_question"] is False
+        assert "Revision Agent" in tuning_result["tuning_messages"][-1]["response"]
 
 
 # ============================================================================
@@ -419,11 +597,12 @@ class TestStateManagement:
                     source_article=sample_source_article,
                     user_input=sample_user_input,
                 )
+                await approve_facts(thread_id=unique_thread_id)
 
                 # 获取当前状态
                 state = await get_current_state(unique_thread_id)
 
-        # 验证状态包含必要字段
+        # 验证事实确认后已经生成大纲
         assert "outline" in state
         assert state["outline"] == mock_outline
 
@@ -500,6 +679,7 @@ class TestConcurrentSessions:
                     source_article=source_article_1,
                     user_input="改写需求1",
                 )
+                result_1 = await approve_facts(thread_id=thread_id_1)
 
                 # 重置全局状态用于 session 2
                 gh._hil_app = None
@@ -523,6 +703,7 @@ class TestConcurrentSessions:
                     source_article=source_article_2,
                     user_input="改写需求2",
                 )
+                result_2 = await approve_facts(thread_id=thread_id_2)
 
         # 验证两个 session 结果不同
         assert result_1["outline"] == mock_outline_1
@@ -567,6 +748,7 @@ class TestWebSocketReconnect:
                     source_article={"title": "测试", "text": "内容"},
                     user_input="改写",
                 )
+                await approve_facts(thread_id=thread_id)
                 await approve_outline(thread_id=thread_id)
 
                 # 模拟断线：获取状态

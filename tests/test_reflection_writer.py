@@ -1,366 +1,450 @@
-"""测试 Reflection Writer 的 Fact Checker 节点."""
+"""Tests for adaptive evidence-grounded writing and length control."""
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import sys
-from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
 
-# 添加项目根目录到 path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-
-# ============================================================================
-# Fixtures
-# ============================================================================
-
-@pytest.fixture
-def normal_fact_sheet():
-    """正常的 Fact Sheet（来源可靠）."""
-    return """## 核心论点
-- AI发展迅速，正在改变各行各业
-- 企业需要积极拥抱AI技术
-
-## 关键数据
-- 2023年AI市场规模达到150亿美元（来源：McKinsey报告）
-- 70%的企业已开始使用AI工具（来源：Gartner调研）
-
-## 案例素材
-- 案例1：某公司使用AI客服，效率提升50%
-- 案例2：某银行使用AI风控，准确率达95%
-
-## 专家观点
-- 李明教授指出：AI将重塑未来工作方式（来源：清华学报）
-- 张华专家认为：企业AI转型是必然趋势
-
-## 参考资料
-- [1] https://example.com/report1
-- [2] https://example.com/report2
-"""
+from forge.agents.reflection_writer import (
+    build_generation_plan,
+    build_reflection_graph,
+    count_visible_chars,
+    critic_node,
+    deterministic_checks,
+    match_draft_facts,
+    generator_node,
+    reviser_node,
+    run_reflection_writer,
+    summarize_fact_matches,
+)
 
 
 @pytest.fixture
-def suspicious_fact_sheet():
-    """包含可疑数据的 Fact Sheet."""
-    return """## 核心论点
-- AI将彻底取代人类工作
-
-## 关键数据
-- 2030年AI将取代90%人类工作 [来源不明]
-- 全球AI投资增长500%（无数据来源）
-- AI市场规模将在2025年达到1万亿美元 [网络传言]
-
-## 案例素材
-- 案例1：某公司裁员50%，全部换成AI [未证实]
-
-## 专家观点
-- 专家预测：AI将在5年内消灭所有白领工作 [来源不明]
-
-## 参考资料
-- 无
-"""
-
-
-@pytest.fixture
-def raw_content():
-    """原文章内容."""
+def research_result():
     return {
-        "title": "AI发展趋势分析",
-        "text": "人工智能正在快速发展...",
+        "status": "complete",
+        "tasks": [],
+        "evidence": [{
+            "evidence_id": "E001",
+            "task_id": "source",
+            "source": "锐博官网",
+            "title": "集团概况",
+            "url": "https://www.nnngu.com/group-profile",
+            "published_at": "2026-01-01",
+            "retrieved_at": "2026-07-22T00:00:00+00:00",
+            "excerpt": "锐博集团创办于2002年，总部位于广州。",
+            "source_type": "source_article",
+            "authority_score": 1.0,
+            "relevance_score": 1.0,
+            "content_hash": "hash",
+        }],
+        "facts": [{
+            "fact_id": "F001",
+            "task_id": "source",
+            "section_id": "S01",
+            "claim": "锐博集团创办于2002年，总部位于广州。",
+            "status": "verified",
+            "confidence": 1.0,
+            "review": {
+                "decision": "accepted", "comment": "", "priority": "normal",
+                "reviewed_at": "now",
+            },
+            "evidence_ids": ["E001"],
+            "sources": [{
+                "evidence_id": "E001",
+                "source": "锐博官网",
+                "title": "集团概况",
+                "url": "https://www.nnngu.com/group-profile",
+                "published_at": "2026-01-01",
+                "retrieved_at": "2026-07-22T00:00:00+00:00",
+            }],
+        }],
+        "coverage": 1.0,
+        "warnings": [],
+        "generated_at": "2026-07-22T00:00:00+00:00",
     }
 
 
-# ============================================================================
-# Tests for _extract_key_items
-# ============================================================================
-
-class TestExtractKeyItems:
-    """测试关键数据项提取."""
-
-    def test_extract_numbers(self):
-        """测试提取数字和百分比."""
-        from forge.agents.reflection_writer import _extract_key_items
-
-        fact_sheet = "市场规模增长50%，用户数达到100万，准确率95%"
-        items = _extract_key_items(fact_sheet)
-
-        assert "50%" in items
-        assert "95%" in items
-
-    def test_extract_dates(self):
-        """测试提取日期."""
-        from forge.agents.reflection_writer import _extract_key_items
-
-        fact_sheet = "2023年数据，2024-05-01发布，3月15日会议"
-        items = _extract_key_items(fact_sheet)
-
-        assert any("2023" in item for item in items)
-        assert any("3月" in item or "15日" in item for item in items)
-
-    def test_extract_names(self):
-        """测试提取人名."""
-        from forge.agents.reflection_writer import _extract_key_items
-
-        fact_sheet = "李明教授指出，张华专家认为，王强博士发现"
-        items = _extract_key_items(fact_sheet)
-
-        assert len(items) > 0
-
-
-# ============================================================================
-# Tests for _extract_items_to_verify
-# ============================================================================
-
-class TestExtractItemsToVerify:
-    """测试从分析结果提取需验证项."""
-
-    def test_extract_from_analysis(self):
-        """测试提取需验证项."""
-        from forge.agents.reflection_writer import _extract_items_to_verify
-
-        analysis = """## 高置信度事实
-- 数据项A
-
-## 需验证的数据项
-1. [2030年AI将取代90%工作] - 来源不明
-2. [市场规模1万亿美元] - 网络传言
-"""
-        items = _extract_items_to_verify(analysis)
-
-        assert "2030年AI将取代90%工作" in items
-        assert "市场规模1万亿美元" in items
-
-    def test_empty_analysis(self):
-        """测试空分析结果."""
-        from forge.agents.reflection_writer import _extract_items_to_verify
-
-        items = _extract_items_to_verify("无需验证的数据项")
-        assert items == []
-
-
-# ============================================================================
-# Tests for _annotate_fact_sheet
-# ============================================================================
-
-class TestAnnotateFactSheet:
-    """测试 Fact Sheet 标注."""
-
-    def test_annotate_suspicious_items(self):
-        """测试标注可疑项."""
-        from forge.agents.reflection_writer import _annotate_fact_sheet
-
-        fact_sheet = "## 核心论点\n- AI发展迅速"
-        suspicious_items = ["数据项1", "数据项2"]
-
-        annotated = _annotate_fact_sheet(fact_sheet, suspicious_items)
-
-        assert "⚠️ 可疑项提示" in annotated
-        assert "数据项1" in annotated
-        assert "数据项2" in annotated
-
-    def test_no_suspicious_items(self):
-        """测试无可疑项时不添加标注."""
-        from forge.agents.reflection_writer import _annotate_fact_sheet
-
-        fact_sheet = "## 核心论点\n- AI发展迅速"
-        annotated = _annotate_fact_sheet(fact_sheet, [])
-
-        assert "⚠️" not in annotated
-        assert annotated == fact_sheet
-
-
-# ============================================================================
-# Tests for fact_checker_node
-# ============================================================================
-
-class TestFactCheckerNode:
-    """测试 Fact Checker 节点."""
-
-    @pytest.mark.asyncio
-    async def test_normal_fact_sheet(self, normal_fact_sheet, raw_content):
-        """测试正常 Fact Sheet（无可疑项）."""
-        from forge.agents.reflection_writer import fact_checker_node
-
-        state = {
-            "fact_sheet": normal_fact_sheet,
-            "raw_content": raw_content,
+def make_generator_result(plan, draft):
+    sections = plan["sections"][:1] if plan["mode"] == "single_pass" else plan["sections"]
+    if plan["mode"] == "single_pass":
+        sections[0]["title"] = "全文"
+        sections[0]["budget"] = {
+            "target_chars": plan["target_chars"],
+            "min_chars": plan["min_chars"],
+            "max_chars": plan["max_chars"],
         }
-
-        # Mock LLM 返回分析结果（无可疑项）
-        with patch('forge.agents.reflection_writer.LLMClient') as mock_llm:
-            mock_instance = MagicMock()
-            mock_instance.chat_with_retry = AsyncMock(
-                return_value="## 高置信度事实\n- 所有事实来源可靠\n\n## 需验证的数据项\n（无）"
-            )
-            mock_llm.return_value = mock_instance
-
-            result = await fact_checker_node(state)
-
-            assert "verified_fact_sheet" in result
-            assert result["suspicious_items"] == []
-
-    @pytest.mark.asyncio
-    async def test_suspicious_fact_sheet(self, suspicious_fact_sheet, raw_content):
-        """测试包含可疑数据的 Fact Sheet."""
-        from forge.agents.reflection_writer import fact_checker_node
-
-        state = {
-            "fact_sheet": suspicious_fact_sheet,
-            "raw_content": raw_content,
-        }
-
-        # Mock LLM 返回分析结果（有可疑项）
-        with patch('forge.agents.reflection_writer.LLMClient') as mock_llm:
-            mock_instance = MagicMock()
-            mock_instance.chat_with_retry = AsyncMock(
-                return_value="""## 低置信度事实
-- 2030年AI将取代90%工作 [来源不明]
-
-## 需验证的数据项
-1. [2030年AI将取代90%工作] - 来源不明需要验证
-"""
-            )
-            mock_llm.return_value = mock_instance
-
-            # Mock SyncLLMClient 验证结果
-            with patch('forge.agents.reflection_writer.SyncLLMClient') as mock_sync:
-                mock_sync_instance = MagicMock()
-                mock_sync_instance.chat_with_retry = MagicMock(
-                    return_value="可疑：该预测过于夸张，缺乏权威来源支持"
-                )
-                mock_sync.return_value = mock_sync_instance
-
-                result = await fact_checker_node(state)
-
-                assert "verified_fact_sheet" in result
-                assert "⚠️ 可疑项提示" in result["verified_fact_sheet"]
-                assert len(result["suspicious_items"]) > 0
-
-    @pytest.mark.asyncio
-    async def test_llm_failure(self, normal_fact_sheet, raw_content):
-        """测试 LLM 失败时的 fallback."""
-        from forge.agents.reflection_writer import fact_checker_node
-
-        state = {
-            "fact_sheet": normal_fact_sheet,
-            "raw_content": raw_content,
-        }
-
-        # Mock LLM 抛出异常
-        with patch('forge.agents.reflection_writer.LLMClient') as mock_llm:
-            mock_instance = MagicMock()
-            mock_instance.chat_with_retry = AsyncMock(
-                side_effect=Exception("LLM API error")
-            )
-            mock_llm.return_value = mock_instance
-
-            result = await fact_checker_node(state)
-
-            # 应该有 fallback，不阻塞流程
-            assert "verified_fact_sheet" in result
+        plan["sections"] = sections
+    sections[0].update({
+        "content": draft,
+        "actual_chars": count_visible_chars(draft),
+        "status": "within_budget",
+        "summary": draft[:180],
+    })
+    return {
+        "status": "generated",
+        "draft": draft,
+        "generation_plan": plan,
+        "section_reports": sections,
+        "writing_memory": {
+            "thesis": "测试", "terminology": {},
+            "used_fact_ids": sections[0]["fact_ids"],
+            "section_summaries": {sections[0]["section_id"]: draft[:180]},
+            "open_threads": [], "previous_tail": draft[-400:],
+            "actual_chars": count_visible_chars(draft),
+            "remaining_target_chars": max(0, plan["target_chars"] - count_visible_chars(draft)),
+        },
+        "generator_action_log": [],
+        "generator_tool_action_count": 3,
+        "generator_model_call_count": 4,
+        "generator_stop_reason": "finish_generation",
+        "errors": [],
+    }
 
 
-# ============================================================================
-# Tests for build_reflection_graph
-# ============================================================================
-
-class TestBuildReflectionGraph:
-    """测试 Reflection Graph 构建."""
-
-    def test_graph_structure(self):
-        """测试 Graph 包含 Fact Checker 节点."""
-        from forge.agents.reflection_writer import build_reflection_graph
-
-        graph = build_reflection_graph()
-
-        # 检查节点
-        nodes = graph.nodes
-        assert "fact_checker" in nodes
-        assert "generator" in nodes
-        assert "critic" in nodes
-        assert "reviser" in nodes
-
-    def test_graph_flow(self):
-        """测试 Graph 流程顺序."""
-        from forge.agents.reflection_writer import build_reflection_graph
-
-        graph = build_reflection_graph()
-
-        # 检查边（START → fact_checker → generator → critic）
-        # 注意：StateGraph 的边信息需要编译后才能验证
-        # 这里只验证节点存在
-        assert "fact_checker" in graph.nodes
+def test_count_visible_chars_excludes_url_and_markdown():
+    assert count_visible_chars("## 标题\n正文123 https://example.com/a") == 7
 
 
-# ============================================================================
-# Tests for run_reflection_writer
-# ============================================================================
+def test_short_article_uses_single_pass(research_result):
+    plan = build_generation_plan(
+        "一、背景\n二、结论", research_result, "控制在800字", "zhihu_article", {}
+    )
 
-class TestRunReflectionWriter:
-    """测试完整 Reflection Writer 流程."""
-
-    @pytest.mark.asyncio
-    async def test_full_flow_with_fact_checker(self, normal_fact_sheet, raw_content):
-        """测试完整流程（包含 Fact Checker）."""
-        from forge.agents.reflection_writer import run_reflection_writer
-
-        # Mock LLMClient
-        with patch('forge.agents.reflection_writer.LLMClient') as mock_llm:
-            mock_instance = MagicMock()
-            # Fact Checker 分析
-            # Generator 写作
-            # Critic 审查
-            mock_instance.chat_with_retry = AsyncMock(
-                side_effect=[
-                    "## 高置信度事实\n- 所有来源可靠",  # Fact Checker
-                    "这是生成的文章内容...",  # Generator
-                    "**通过**",  # Critic（第一次通过）
-                ]
-            )
-            mock_llm.return_value = mock_instance
-
-            result = await run_reflection_writer(
-                fact_sheet=normal_fact_sheet,
-                raw_content=raw_content,
-                target_platform="zhihu_article",
-                user_input="改写成通俗易懂的风格",
-            )
-
-            assert result is not None
-            assert len(result) > 0
+    assert plan["mode"] == "single_pass"
+    assert plan["target_chars"] == 800
 
 
-# ============================================================================
-# Integration Test
-# ============================================================================
+def test_short_article_with_many_headings_still_avoids_fragmentation(research_result):
+    outline = "\n".join(f"{index}. 章节{index}" for index in range(1, 9))
+    plan = build_generation_plan(
+        outline, research_result, "控制在900字", "zhihu_article", {}
+    )
 
-class TestIntegration:
-    """集成测试."""
+    assert plan["mode"] == "single_pass"
 
-    @pytest.mark.asyncio
-    async def test_fact_checker_to_generator_flow(self, suspicious_fact_sheet, raw_content):
-        """测试 Fact Checker → Generator 数据传递."""
-        from forge.agents.reflection_writer import ReflectionState
 
-        # 模拟 Fact Checker 输出
-        state: ReflectionState = {
-            "fact_sheet": suspicious_fact_sheet,
-            "raw_content": raw_content,
-            "verified_fact_sheet": suspicious_fact_sheet + "\n\n## ⚠️ 可疑项提示\n- 数据项可疑",
-            "suspicious_items": ["可疑数据"],
-            "verification_log": "验证日志",
-        }
+def test_section_budgets_sum_to_total_target(research_result):
+    plan = build_generation_plan(
+        "一、背景\n二、业务\n三、案例\n四、总结",
+        research_result,
+        "写成2000字",
+        "zhihu_article",
+        {},
+    )
 
-        # Generator 应使用 verified_fact_sheet
-        from forge.agents.reflection_writer import generator_node
+    assert plan["mode"] == "section_sequential"
+    assert sum(item["budget"]["target_chars"] for item in plan["sections"]) == 2000
+    assert all(item["budget"]["min_chars"] < item["budget"]["max_chars"] for item in plan["sections"])
 
-        with patch('forge.agents.reflection_writer.LLMClient') as mock_llm:
-            mock_instance = MagicMock()
-            mock_instance.chat_with_retry = AsyncMock(
-                return_value="生成的文章..."
-            )
-            mock_llm.return_value = mock_instance
 
-            result = await generator_node(state)
+def test_few_complex_sections_use_hybrid_mode(research_result):
+    plan = build_generation_plan(
+        "一、背景\n二、完整招录流程",
+        research_result,
+        "写成1800字",
+        "zhihu_article",
+        {},
+    )
 
-            # 验证 Generator 使用了 verified_fact_sheet
-            assert result["current_draft"] is not None
+    assert plan["mode"] == "hybrid"
+    assert len(plan["sections"]) == 2
+
+
+def test_deterministic_checks_reject_unsupported_number_and_length(research_result):
+    issues, log = deterministic_checks(
+        "锐博集团创办于2002年，目前拥有9999家公司。",
+        research_result,
+        {"text": "锐博集团创办于2002年。"},
+        {
+            "target_chars": 800, "min_chars": 760, "max_chars": 840,
+            "actual_chars": 30, "deviation": -0.962, "status": "too_short",
+        },
+    )
+
+    assert any(issue["issue_type"] == "unsupported_number" for issue in issues)
+    assert any(issue["issue_type"] == "word_count_too_short" for issue in issues)
+    assert any("unsupported_numbers=1" in item for item in log)
+
+
+def test_fact_match_detects_same_relation_with_different_year(research_result):
+    draft_facts = [{
+        "draft_fact_id": "DF001",
+        "claim": "锐博集团成立在2022年",
+        "span": "锐博集团成立在2022年",
+        "section_id": "S01",
+        "subject": "锐博集团",
+        "predicate": "founding_date",
+        "value": "2022年",
+        "normalized_value": "2022",
+        "value_type": "year",
+        "unit": "年",
+        "qualifiers": {},
+        "matched_fact_ids": ["F001"],
+        "match_status": "not_verifiable",
+        "confidence": 0.99,
+        "conflicting_fields": [],
+    }]
+
+    matched = match_draft_facts(draft_facts, research_result)
+
+    assert matched[0]["match_status"] == "contradicted"
+    assert matched[0]["conflicting_fields"] == ["value"]
+    assert summarize_fact_matches(matched)["contradicted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_critic_uses_structured_fact_match_as_hard_grounding_gate(research_result):
+    extraction_json = """{
+      "draft_facts": [{
+        "claim": "锐博集团成立在2022年",
+        "span": "锐博集团成立在2022年",
+        "section_id": "S01",
+        "subject": "锐博集团",
+        "predicate": "成立在",
+        "value": "2022年",
+        "value_type": "year",
+        "matched_fact_ids": ["F001"],
+        "match_status": "not_verifiable",
+        "confidence": 0.99
+      }]
+    }"""
+    critic_json = """{
+      "scores": {"grounding": 1.0, "completeness": 1.0, "structure": 1.0, "style": 1.0},
+      "issues": []
+    }"""
+    with patch("forge.agents.reflection_writer.LLMClient") as llm_class:
+        llm = MagicMock()
+        llm.chat_with_retry = AsyncMock(side_effect=[extraction_json, critic_json])
+        llm_class.return_value = llm
+        result = await critic_node({
+            "current_draft": "锐博集团成立在2022年。",
+            "research_result": research_result,
+            "outline": "一、集团背景",
+            "raw_content": {"text": "锐博集团创办于2002年。"},
+            "target_platform": "zhihu_article",
+        })
+
+    assert result["approved"] is False
+    assert result["scores"]["grounding"] <= 0.59
+    assert result["fact_match_summary"]["contradicted"] == 1
+    assert any(issue["issue_type"] == "contradiction" for issue in result["issues"])
+
+
+@pytest.mark.asyncio
+async def test_critic_failure_never_auto_approves(research_result):
+    with patch("forge.agents.reflection_writer.LLMClient") as llm_class:
+        llm = MagicMock()
+        llm.chat_with_retry = AsyncMock(side_effect=RuntimeError("critic unavailable"))
+        llm_class.return_value = llm
+        result = await critic_node({
+            "current_draft": "锐博集团创办于2002年。",
+            "research_result": research_result,
+            "outline": "一、集团背景",
+            "raw_content": {"text": "锐博集团创办于2002年。"},
+            "target_platform": "zhihu_article",
+        })
+
+    assert result["approved"] is False
+    assert result["status"] == "needs_review"
+    assert any(issue["issue_type"] == "critic_error" for issue in result["issues"])
+
+
+@pytest.mark.asyncio
+async def test_generator_hard_boundary_failure_requires_human_review(research_result):
+    critic_json = """{
+      "draft_facts": [],
+      "scores": {"grounding": 1.0, "completeness": 1.0, "structure": 1.0, "style": 1.0},
+      "issues": []
+    }"""
+    with patch("forge.agents.reflection_writer.LLMClient") as llm_class:
+        llm = MagicMock()
+        llm.chat_with_retry = AsyncMock(side_effect=[
+            '{"draft_facts": []}', critic_json,
+        ])
+        llm_class.return_value = llm
+        result = await critic_node({
+            "current_draft": "部分草稿",
+            "research_result": research_result,
+            "outline": "一、集团背景",
+            "raw_content": {"text": "锐博集团创办于2002年。"},
+            "issues": [{
+                "issue_id": "I001",
+                "issue_type": "generator_agent_error",
+                "severity": "high",
+                "span": "",
+                "fact_id": "",
+                "instruction": "达到动作上限",
+            }],
+        })
+
+    assert result["approved"] is False
+    assert result["status"] == "needs_review"
+
+
+def test_reflection_graph_has_adaptive_quality_loop():
+    graph = build_reflection_graph()
+    assert set(graph.nodes) == {"planning", "generator", "critic", "reviser"}
+
+
+@pytest.mark.asyncio
+async def test_generator_node_delegates_to_controlled_agent(research_result):
+    async def agent_side_effect(**kwargs):
+        return make_generator_result(kwargs["generation_plan"], "正文" * 150)
+
+    with patch(
+        "forge.agents.reflection_writer.run_generator_agent",
+        new=AsyncMock(side_effect=agent_side_effect),
+    ) as agent:
+        result = await generator_node({
+            "research_result": research_result,
+            "outline": "一、集团背景",
+            "raw_content": {"title": "集团概况", "url": "https://example.com/source"},
+            "target_platform": "zhihu_article",
+            "user_input": "写成300字",
+        })
+
+    agent.assert_awaited_once()
+    call = agent.await_args.kwargs
+    assert call["approved_outline"] == "一、集团背景"
+    assert call["source_metadata"]["url"] == "https://example.com/source"
+    assert result["generator_tool_action_count"] == 3
+    assert result["generator_model_call_count"] == 4
+    assert result["generator_stop_reason"] == "finish_generation"
+
+
+@pytest.mark.asyncio
+async def test_reviser_node_delegates_to_revision_agent(research_result):
+    plan = build_generation_plan(
+        "一、背景\n二、业务", research_result, "写成1300字", "zhihu_article", {}
+    )
+    for section in plan["sections"]:
+        section["content"] = "原章节"
+        section["actual_chars"] = 600
+        section["status"] = "within_budget"
+    agent_result = {
+        "status": "revised", "draft": "Revision Agent 修改稿",
+        "generation_plan": plan, "section_reports": plan["sections"],
+        "writing_memory": {
+            "thesis": "测试", "terminology": {}, "used_fact_ids": ["F001"],
+            "section_summaries": {}, "open_threads": [], "previous_tail": "",
+            "actual_chars": 10, "remaining_target_chars": 1290,
+        },
+        "revision_plan": {"revision_cycle": 1, "source": "critic", "tasks": [], "max_actions": 8},
+        "revision_action_log": [], "issue_resolution_log": [],
+        "tool_action_count": 0, "unresolved_issues": [], "errors": [],
+    }
+    with patch(
+        "forge.agents.reflection_writer.run_revision_agent",
+        new=AsyncMock(return_value=agent_result),
+    ) as agent:
+        result = await reviser_node({
+            "current_draft": "旧全文",
+            "research_result": research_result,
+            "outline": "一、背景\n二、业务",
+            "generation_plan": plan,
+            "section_reports": plan["sections"],
+            "raw_content": {"text": "原文"},
+            "writing_memory": agent_result["writing_memory"],
+            "issues": [{
+                "issue_id": "I001", "issue_type": "style", "severity": "medium",
+                "span": "业务", "fact_id": "", "instruction": "调整风格",
+            }],
+            "revision_attempts": 0,
+        })
+
+    agent.assert_awaited_once()
+    assert result["current_draft"] == "Revision Agent 修改稿"
+    assert result["revision_cycles"] == 1
+    assert result["status"] == "revised"
+
+
+@pytest.mark.asyncio
+async def test_run_reflection_writer_returns_plan_memory_and_word_report(research_result):
+    draft = "锐博集团位于广州" * 35
+    critic_json = """{
+      "draft_facts": [],
+      "scores": {"grounding": 0.98, "completeness": 0.92, "structure": 0.88, "style": 0.86},
+      "issues": []
+    }"""
+    async def generator_side_effect(**kwargs):
+        return make_generator_result(kwargs["generation_plan"], draft)
+
+    with patch("forge.agents.reflection_writer.LLMClient") as llm_class, patch(
+        "forge.agents.reflection_writer.run_generator_agent",
+        new=AsyncMock(side_effect=generator_side_effect),
+    ):
+        llm = MagicMock()
+        llm.chat_with_retry = AsyncMock(side_effect=[
+            '{"draft_facts": []}', critic_json,
+        ])
+        llm_class.return_value = llm
+        result = await run_reflection_writer(
+            research_result=research_result,
+            outline="一、集团背景\n二、业务概况",
+            raw_content={
+                "title": "集团概况",
+                "text": "锐博集团创办于2002年，总部位于广州。",
+                "url": "https://www.nnngu.com/group-profile",
+            },
+            user_input="写成300字",
+        )
+
+    assert result["status"] == "approved"
+    assert result["approved"] is True
+    assert result["generation_plan"]["mode"] == "single_pass"
+    assert result["word_count"]["status"] == "within_budget"
+    assert result["section_reports"]
+    assert result["writing_memory"]["actual_chars"] > 0
+    assert result["revision_plan"]["tasks"] == []
+    assert result["revision_action_log"] == []
+    assert result["tool_action_count"] == 0
+    assert result["generator_tool_action_count"] == 3
+    assert result["generator_model_call_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_reflection_loop_uses_revision_agent_and_rechecks_critic(research_result):
+    draft = "锐博集团位于广州" * 35
+    extraction_json = '{"draft_facts": []}'
+    first_critic = """{
+      "draft_facts": [],
+      "scores": {"grounding": 0.98, "completeness": 0.90, "structure": 0.85, "style": 0.50},
+      "issues": [{
+        "issue_type":"style", "severity":"medium", "span":"全文",
+        "fact_id":"", "instruction":"调整为更自然的知乎文章风格"
+      }]
+    }"""
+    second_critic = """{
+      "draft_facts": [],
+      "scores": {"grounding": 0.98, "completeness": 0.92, "structure": 0.88, "style": 0.90},
+      "issues": []
+    }"""
+    async def generator_side_effect(**kwargs):
+        return make_generator_result(kwargs["generation_plan"], draft)
+
+    with patch("forge.agents.reflection_writer.LLMClient") as writer_llm_class, patch(
+        "forge.agents.revision_agent.LLMClient"
+    ) as revision_llm_class, patch(
+        "forge.agents.reflection_writer.run_generator_agent",
+        new=AsyncMock(side_effect=generator_side_effect),
+    ):
+        writer_llm = MagicMock()
+        writer_llm.chat_with_retry = AsyncMock(side_effect=[
+            extraction_json, first_critic, extraction_json, second_critic,
+        ])
+        writer_llm_class.return_value = writer_llm
+        revision_llm = MagicMock()
+        revision_llm.chat_with_retry = AsyncMock(return_value=draft)
+        revision_llm_class.return_value = revision_llm
+        result = await run_reflection_writer(
+            research_result=research_result,
+            outline="一、集团背景",
+            raw_content={"title": "集团概况", "text": "锐博集团位于广州。"},
+            user_input="写成300字",
+        )
+
+    assert result["status"] == "approved"
+    assert result["revision_cycles"] == 1
+    assert result["revision_plan"]["source"] == "critic"
+    assert result["revision_action_log"][0]["tool"] == "adjust_tone"
+    assert result["issue_resolution_log"][0]["validation"]["final_semantic_review"] == "passed"

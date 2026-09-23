@@ -47,6 +47,9 @@ class DeepModeSession(TypedDict, total=False):
     outline: Optional[Outline]
     outline_version: int
     rag_context: Optional[str]
+    target_platform: Optional[str]
+    research_result: Optional[Dict[str, Any]]
+    quality_report: Optional[Dict[str, Any]]
     current_draft: Optional[str]
     tuning_history: List[TuningMessage]
     is_active: bool
@@ -69,6 +72,7 @@ class DeepModeSession(TypedDict, total=False):
 STAGE_PLANNING = "planning"
 STAGE_WAITING_INPUT = "waiting_input"
 STAGE_GENERATING_OUTLINE = "generating_outline"
+STAGE_WAITING_FACTS = "waiting_facts"
 STAGE_WAITING_OUTLINE = "waiting_outline"
 STAGE_GENERATING_CONTENT = "generating_content"
 STAGE_EXECUTING = "executing"
@@ -83,6 +87,7 @@ class SessionStage:
     PLANNING = STAGE_PLANNING
     WAITING_INPUT = STAGE_WAITING_INPUT
     GENERATING_OUTLINE = STAGE_GENERATING_OUTLINE
+    WAITING_FACTS = STAGE_WAITING_FACTS
     WAITING_OUTLINE = STAGE_WAITING_OUTLINE
     GENERATING_CONTENT = STAGE_GENERATING_CONTENT
     EXECUTING = STAGE_EXECUTING
@@ -111,6 +116,9 @@ def create_initial_session(
         outline=None,
         outline_version=0,
         rag_context=None,
+        target_platform="zhihu_article",
+        research_result=None,
+        quality_report=None,
         current_draft=None,
         tuning_history=[],
         is_active=True,

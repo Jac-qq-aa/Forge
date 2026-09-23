@@ -4,6 +4,9 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 # 安装系统依赖（添加 PostgreSQL 客户端库）
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -39,22 +42,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装 Python 依赖（使用 --only-binary 避免编译）
-RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt 2>/dev/null || \
-    pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir \
-        uvicorn[standard] fastapi httpx jinja2 \
-        "langgraph-cli[inmem]" \
-        "psycopg[binary]" psycopg-pool \
-        langgraph-checkpoint-postgres \
-        playwright-stealth \
-        pymilvus \
-    && python -m playwright install chromium
+# 依赖版本统一由 requirements.txt 管理。
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制项目代码
 COPY forge/ ./forge/
+COPY migrations/ ./migrations/
 COPY langgraph.json .
-COPY .env .
+
+# 生产容器使用非 root 用户；密钥只通过运行时 Secret 注入。
+RUN useradd --create-home --uid 10001 forge \
+    && mkdir -p /app/output /ms-playwright \
+    && python -m playwright install chromium \
+    && chown -R forge:forge /app /ms-playwright
+
+USER 10001:10001
 
 # 暴露端口
 EXPOSE 8000

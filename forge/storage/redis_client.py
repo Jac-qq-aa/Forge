@@ -9,7 +9,8 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from forge.config import (
-    REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_DB,
+    REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_SSL, REDIS_DB,
+    REDIS_MAX_CONNECTIONS, REDIS_SOCKET_TIMEOUT_SECONDS,
     SESSION_TTL_SECONDS
 )
 
@@ -24,11 +25,16 @@ def get_redis_pool() -> redis.ConnectionPool:
     global _redis_pool
     if _redis_pool is None:
         _redis_pool = redis.ConnectionPool(
+            connection_class=redis.SSLConnection if REDIS_SSL else redis.Connection,
             host=REDIS_HOST,
             port=REDIS_PORT,
             password=REDIS_PASSWORD,
             db=REDIS_DB,
             decode_responses=True,
+            max_connections=REDIS_MAX_CONNECTIONS,
+            socket_connect_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+            socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+            health_check_interval=30,
         )
         logger.info(f"[Redis] Connection pool created: {REDIS_HOST}:{REDIS_PORT}")
     return _redis_pool

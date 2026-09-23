@@ -503,67 +503,9 @@ class TestEvaluationWorker:
             await process_probe_log(payload)
             mock_save.assert_called_once_with(payload)
 
-    @pytest.mark.asyncio
-    async def test_trigger_evaluation_on_final_node(self):
-        """测试在最终节点触发完整评估。"""
+    def test_node_probe_does_not_trigger_final_evaluation(self):
+        """最终评估只由深度流程的定稿事件触发。"""
         from forge.evaluation.worker import should_trigger_evaluation
 
-        # director节点应触发评估
-        assert should_trigger_evaluation("director") == True
-        assert should_trigger_evaluation("finalize") == True
-
-        # 其他节点不触发
-        assert should_trigger_evaluation("editor") == False
-        assert should_trigger_evaluation("ai_detector") == False
-
-    @pytest.mark.asyncio
-    async def test_process_probe_log_triggers_evaluation(self):
-        """测试在最终节点处理时触发完整评估。"""
-        from forge.evaluation.worker import process_probe_log
-        from unittest.mock import AsyncMock, patch, MagicMock
-
-        payload = {
-            "session_id": "test-session-eval",
-            "node_name": "director",
-            "timestamp": 1234567890,
-            "input_metrics": {"ai_score": 0.0},
-            "output_metrics": {"ai_score": 0.3},
-            "duration_ms": 5000,
-            "loop_type": None,
-            "loop_iteration": 0,
-        }
-
-        mock_logs = [
-            {
-                "node_name": "editor",
-                "input_metrics": {"ai_score": 0.0},
-                "output_metrics": {"ai_score": 0.3},
-                "duration_ms": 3000,
-            },
-            payload,
-        ]
-
-        with patch("forge.evaluation.worker.save_probe_log", new_callable=AsyncMock) as mock_save:
-            with patch("forge.evaluation.worker.get_session_probe_logs", new_callable=AsyncMock) as mock_get_logs:
-                with patch("forge.evaluation.worker.save_evaluation_result", new_callable=AsyncMock) as mock_save_result:
-                    with patch("forge.evaluation.worker.EvaluationEngine") as mock_engine_class:
-                        mock_get_logs.return_value = mock_logs
-                        mock_engine = MagicMock()
-                        mock_engine.evaluate_session = AsyncMock(return_value={
-                            "overall_score": 8.5,
-                            "faithfulness_score": 8.0,
-                            "relevance_score": 8.0,
-                            "human_score": 9.0,
-                        })
-                        mock_engine_class.return_value = mock_engine
-
-                        await process_probe_log(payload)
-
-                        # 验证保存了probe log
-                        mock_save.assert_called_once_with(payload)
-                        # 验证获取了session logs
-                        mock_get_logs.assert_called_once_with("test-session-eval")
-                        # 验证执行了评估
-                        mock_engine.evaluate_session.assert_called_once()
-                        # 验证保存了评估结果
-                        mock_save_result.assert_called_once()
+        assert should_trigger_evaluation("director") is False
+        assert should_trigger_evaluation("finalize") is False

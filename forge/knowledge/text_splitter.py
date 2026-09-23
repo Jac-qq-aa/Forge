@@ -8,7 +8,7 @@
 
 import logging
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,13 @@ class ChineseTextSplitter:
         self.chunk_overlap = chunk_overlap
         self.min_chunk_size = min_chunk_size
         self.preserve_context = preserve_context
+
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than 0")
+        if not 0 <= self.chunk_overlap < self.chunk_size:
+            raise ValueError("chunk_overlap must be between 0 and chunk_size")
+        if not 0 < self.min_chunk_size <= self.chunk_size:
+            raise ValueError("min_chunk_size must be between 1 and chunk_size")
 
         # 中文分割分隔符优先级（从大到小）
         self.separators = [
@@ -98,10 +105,6 @@ class ChineseTextSplitter:
         # 构建结果
         result = []
         for i, chunk in enumerate(chunks):
-            # 截断过长的片段
-            if len(chunk) > self.chunk_size:
-                chunk = chunk[:self.chunk_size]
-
             result.append({
                 "content": self._add_context_prefix(chunk, metadata),
                 "chunk_index": i,
@@ -113,13 +116,10 @@ class ChineseTextSplitter:
 
     def _clean_text(self, text: str) -> str:
         """清理文本，移除多余空白和特殊字符。"""
-        # 移除连续空白
-        text = re.sub(r'\s+', ' ', text)
-        # 移除连续换行（保留段落边界）
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        # 移除前后空白
-        text = text.strip()
-        return text
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[^\S\n]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
 
     def _recursive_split(
         self,
@@ -127,40 +127,40 @@ class ChineseTextSplitter:
         separators: List[str]
     ) -> List[str]:
         """递归分割文本，按分隔符优先级尝试。"""
-        final_chunks = []
-
         # 如果文本足够短，直接返回
         if len(text) <= self.chunk_size:
             return [text]
 
-        # 尝试按当前分隔符分割
-        for separator in separators:
-            if separator == "":
-                # 强制切分
-                chunks = self._force_split(text)
-                final_chunks.extend(chunks)
-                break
+        separator = next((item for item in separators if item and item in text), "")
+        if not separator:
+            return self._force_split(text)
 
-            if separator in text:
-                # 按分隔符分割
-                splits = text.split(separator)
+        parts = text.split(separator)
+        units = [
+            part + separator if index < len(parts) - 1 else part
+            for index, part in enumerate(parts)
+            if part or index < len(parts) - 1
+        ]
+        remaining_separators = separators[separators.index(separator) + 1:]
+        chunks = []
+        current = ""
 
-                # 尝试合并分割后的片段
-                merged_chunks = self._merge_splits(splits, separator)
+        for unit in units:
+            if len(unit) > self.chunk_size:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(self._recursive_split(unit, remaining_separators))
+            elif len(current) + len(unit) <= self.chunk_size:
+                current += unit
+            else:
+                if current:
+                    chunks.append(current)
+                current = unit
 
-                # 检查是否有片段仍然过长
-                for chunk in merged_chunks:
-                    if len(chunk) > self.chunk_size:
-                        # 对过长片段递归使用更细粒度的分隔符
-                        remaining_separators = separators[separators.index(separator) + 1:]
-                        sub_chunks = self._recursive_split(chunk, remaining_separators)
-                        final_chunks.extend(sub_chunks)
-                    else:
-                        final_chunks.append(chunk)
-
-                break  # 找到有效分隔符后退出循环
-
-        return final_chunks
+        if current:
+            chunks.append(current)
+        return chunks
 
     def _merge_splits(
         self,
@@ -203,25 +203,16 @@ class ChineseTextSplitter:
             return chunks
 
         merged = []
-        current = ""
-
         for chunk in chunks:
-            if len(current) + len(chunk) < self.min_chunk_size:
-                # 合并过短片段
-                current = current + " " + chunk if current else chunk
+            if not chunk:
+                continue
+            if merged and (
+                len(chunk) < self.min_chunk_size
+                or len(merged[-1]) < self.min_chunk_size
+            ) and len(merged[-1]) + len(chunk) <= self.chunk_size:
+                merged[-1] += chunk
             else:
-                if current:
-                    merged.append(current)
-                current = chunk
-
-        # 处理最后一个片段
-        if current:
-            if len(current) < self.min_chunk_size and merged:
-                # 与前一个片段合并
-                merged[-1] = merged[-1] + " " + current
-            else:
-                merged.append(current)
-
+                merged.append(chunk)
         return merged
 
     def _add_overlap(self, chunks: List[str]) -> List[str]:
@@ -239,10 +230,6 @@ class ChineseTextSplitter:
 
                 # 添加重叠到当前片段
                 chunk = overlap_text + chunk
-
-            # 截断防止过长
-            if len(chunk) > self.chunk_size + self.chunk_overlap:
-                chunk = chunk[:self.chunk_size + self.chunk_overlap]
 
             overlapped.append(chunk)
 

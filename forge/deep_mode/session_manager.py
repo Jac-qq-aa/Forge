@@ -17,6 +17,7 @@ from forge.deep_mode.session_state import (
     STAGE_COMPLETED,
 )
 from forge.deep_mode.errors import SessionNotFoundError
+from forge.evaluation.article_queue import try_enqueue_article_expression_evaluation
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,35 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[SessionManager] PG finalize failed: {e}")
             raise RuntimeError(f"Failed to finalize session: {e}")
+
+        # 定稿成功后异步投递表达质量评估。投递失败不能阻断用户获取最终文章。
+        if final_draft.strip():
+            source_article = session.get("source_article") or {}
+            source_platform = (
+                source_article.get("platform", "")
+                if isinstance(source_article, dict)
+                else ""
+            )
+            target_platform = str(
+                session.get("target_platform")
+                or source_platform
+                or "zhihu_article"
+            )
+            queued = await try_enqueue_article_expression_evaluation(
+                session_id=session_id,
+                final_article=final_draft,
+                target_platform=target_platform,
+            )
+            if queued:
+                logger.info(
+                    "[SessionManager] Article expression evaluation queued: %s",
+                    session_id,
+                )
+            else:
+                logger.warning(
+                    "[SessionManager] Evaluation queue failed (non-critical): %s",
+                    session_id,
+                )
 
         # Redis 清理 - 失败可忽略
         try:

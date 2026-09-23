@@ -1,18 +1,38 @@
 """测试 Web API 端点."""
 
 import pytest
+import jwt
+import time
+from uuid import uuid4
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, AsyncMock, MagicMock
 
 
 @pytest.fixture
-async def client():
+async def client(monkeypatch):
     """创建测试客户端."""
     from forge.web.app import app
 
+    secret = "a" * 32
+    monkeypatch.setenv("FORGE_JWT_SECRET", secret)
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "user-1",
+            "tenant_id": "tenant-1",
+            "scope": "jobs admin",
+            "iat": now,
+            "exp": now + 3600,
+            "iss": "forge-auth",
+            "aud": "forge-api",
+        },
+        secret,
+        algorithm="HS256",
+    )
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test"
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
     ) as ac:
         yield ac
 
@@ -37,24 +57,10 @@ class TestSearchEndpoint:
     @pytest.mark.asyncio
     async def test_search_zhihu_articles(self, client):
         """测试知乎文章搜索."""
-        # Mock 爬虫
-        mock_articles = [
-            {
-                "title": "测试文章标题",
-                "summary": "文章摘要内容",
-                "source_url": "https://zhuanlan.zhihu.com/p/test",
-                "type": "article",
-                "author": "测试作者",
-            }
-        ]
+        async def fake_submit_job(**kwargs):
+            return ({"id": str(uuid4()), "operation": kwargs["operation"], "status": "queued"}, True)
 
-        with patch("forge.web.app.ZhihuScraper") as MockScraper:
-            mock_instance = MagicMock()
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_instance.search_articles = AsyncMock(return_value=mock_articles)
-            MockScraper.return_value = mock_instance
-
+        with patch("forge.async_jobs.service.submit_job", side_effect=fake_submit_job):
             response = await client.post(
                 "/api/search",
                 json={
@@ -65,10 +71,10 @@ class TestSearchEndpoint:
                 }
             )
 
-            assert response.status_code == 200
+            assert response.status_code == 202
             data = response.json()
-            assert data["success"] == True
-            assert len(data["articles"]) >= 1
+            assert data["status"] == "queued"
+            assert data["operation"] == "zhihu_search"
 
     @pytest.mark.asyncio
     async def test_search_wechat_articles(self, client):
@@ -83,7 +89,7 @@ class TestSearchEndpoint:
             }
         ]
 
-        with patch("forge.web.app.WechatScraper") as MockScraper:
+        with patch("forge.tools.wechat_scraper.WechatScraper") as MockScraper:
             mock_instance = MagicMock()
             mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_instance.__aexit__ = AsyncMock(return_value=None)
@@ -120,72 +126,13 @@ class TestSearchEndpoint:
         assert response.status_code == 400 or response.json().get("success") == False
 
 
-class TestProcessManualEndpoint:
-    """手动输入处理端点测试."""
-
-    @pytest.mark.asyncio
-    async def test_process_manual_success(self, client):
-        """测试手动输入处理."""
-        # Mock workflow
-        mock_result = {
-            "script_path": "/tmp/test_script.txt",
-            "video_path": "",
-            "final_script": "改写后的文案内容",
-        }
-
-        with patch("forge.web.app.workflow.ainvoke") as mock_invoke:
-            mock_invoke.return_value = mock_result
-
-            response = await client.post(
-                "/api/process_manual",
-                json={
-                    "title": "测试标题",
-                    "text": "这是一段测试内容，用于验证手动输入功能是否正常工作。内容需要足够长才能触发完整的处理流程。大概需要一百多个字才行。",
-                    "source_platform": "manual",
-                    "target_platform": "xhs_article",
-                    "generate_video": False,
-                }
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["success"] == True
-            assert "script_path" in data
-
-    @pytest.mark.asyncio
-    async def test_process_manual_with_video(self, client):
-        """测试手动输入+视频生成."""
-        mock_result = {
-            "script_path": "/tmp/test_script.txt",
-            "video_path": "/tmp/test_video.mp4",
-            "final_script": "文案内容",
-        }
-
-        with patch("forge.web.app.workflow.ainvoke") as mock_invoke:
-            mock_invoke.return_value = mock_result
-
-            response = await client.post(
-                "/api/process_manual",
-                json={
-                    "title": "视频测试",
-                    "text": "这段内容用于测试视频生成功能。需要超过一百个字才能触发视频生成流程。",
-                    "source_platform": "manual",
-                    "target_platform": "xhs_video",
-                    "generate_video": True,
-                }
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["success"] == True
-
-
 class TestSaveEndpoint:
     """保存端点测试."""
 
     @pytest.mark.asyncio
-    async def test_save_content(self, client, tmp_path):
+    async def test_save_content(self, client, tmp_path, monkeypatch):
         """测试保存文案."""
+        monkeypatch.setattr("forge.config.SCRIPT_OUTPUT_DIR", str(tmp_path))
         test_file = tmp_path / "test_script.txt"
 
         response = await client.post(
@@ -202,7 +149,7 @@ class TestSaveEndpoint:
 
         # 验证文件已保存
         assert test_file.exists()
-        assert test_file.read_text() == "保存的测试内容"
+        assert test_file.read_text(encoding="utf-8") == "保存的测试内容"
 
     @pytest.mark.asyncio
     async def test_save_without_path(self, client):
@@ -226,26 +173,10 @@ class TestGetAnswersEndpoint:
     @pytest.mark.asyncio
     async def test_get_answers_success(self, client):
         """测试获取回答列表."""
-        mock_result = {
-            "question_title": "测试问题标题",
-            "answers": [
-                {
-                    "url": "https://www.zhihu.com/answer/1",
-                    "text_preview": "回答预览...",
-                    "likes": 100,
-                    "char_count": 500,
-                    "author": "答主1",
-                }
-            ],
-        }
+        async def fake_submit_job(**kwargs):
+            return ({"id": str(uuid4()), "operation": kwargs["operation"], "status": "queued"}, True)
 
-        with patch("forge.web.app.ZhihuScraper") as MockScraper:
-            mock_instance = MagicMock()
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_instance.get_question_answers = AsyncMock(return_value=mock_result)
-            MockScraper.return_value = mock_instance
-
+        with patch("forge.async_jobs.service.submit_job", side_effect=fake_submit_job):
             response = await client.post(
                 "/api/get_answers",
                 json={
@@ -254,7 +185,6 @@ class TestGetAnswersEndpoint:
                 }
             )
 
-            assert response.status_code == 200
+            assert response.status_code == 202
             data = response.json()
-            assert data["success"] == True
-            assert "answers" in data
+            assert data["operation"] == "zhihu_question_answers"

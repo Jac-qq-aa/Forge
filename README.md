@@ -6,7 +6,7 @@
 
 ### 核心功能
 - **多平台抓取**：知乎、微信公众号
-- **AI智能改写**：使用 Qwen LLM，保留核心观点
+- **深度内容生成**：事实研究、大纲审核、正文生成、微调与定稿
 - **知识库融合**：自动搜索锐博集团知识库，自然融入品牌信息
 - **回答筛选**：知乎问题支持多回答筛选，按点赞排序，字数过滤
 - **合并洗稿**：支持合并多个回答后整体改写
@@ -78,17 +78,18 @@ forge/
 │   ├── tts_generator.py      # Edge TTS
 │   └── video_composer.py     # FFmpeg 合成
 ├── agents/
-│   ├── scout.py              # 内容抓取节点
-│   ├── editor.py             # AI改写节点
-│   ├── reviewer.py           # 审核节点
-│   ├── director.py           # 输出生成节点
-│   └── publisher.py          # 发布节点
+│   ├── research_agent.py     # 事实研究
+│   ├── reflection_writer.py  # 正文生成与质量迭代
+│   └── revision_agent.py     # 定向修改
 ├── knowledge/
 │   ├── config.py             # Milvus 配置
 │   └── manager.py            # 知识库管理
+├── deep_mode/
+│   ├── graph_hil.py          # 唯一 LangGraph 工作流
+│   ├── session_state.py      # 会话状态
+│   └── session_manager.py    # 会话持久化
 ├── graph/
-│   ├── state.py              # 状态定义
-│   └── workflow.py           # LangGraph 工作流
+│   └── checkpointer.py       # PostgreSQL 检查点
 └── web/
     ├── app.py                # FastAPI 后端
     ├── templates/index.html  # 前端页面
@@ -97,21 +98,22 @@ forge/
 
 ## 工作流架构
 
-基于 LangGraph 的多节点协作流程：
+Forge 只保留深度生成流程，基于 LangGraph 检查点支持人工审核后的暂停与恢复：
 
 ```
-START → Scout → Editor → Reviewer → Director → Publisher → END
-                    ↑          |
-                    |----------| (revision if needed)
+START → RAG → Research → 事实审核 → Outline → 大纲审核
+      → Reflection → 内容审核/微调 → Finalize → END
 ```
 
 | 节点 | 功能 |
 |------|------|
-| Scout | 抓取知乎/微信内容 |
-| Editor | AI改写，融合知识库 |
-| Reviewer | 内容审核 |
-| Director | 生成最终输出 |
-| Publisher | 发布（dry-run模式） |
+| RAG | 检索知识库素材 |
+| Research | 生成可追溯事实清单 |
+| 事实审核 | 用户确认、排除或要求补充研究 |
+| Outline | 基于确认事实生成大纲 |
+| Reflection | 生成正文并进行质量迭代 |
+| 内容审核/微调 | 用户逐轮调整正文 |
+| Finalize | 保存定稿并投递异步质量评估 |
 
 ## 界面说明
 
@@ -127,10 +129,10 @@ START → Scout → Editor → Reviewer → Director → Publisher → END
    - 知乎问题支持回答筛选（点赞、字数过滤）
    - 多回答合并洗稿
 
-3. **结果对比**
-   - 左侧原文，右侧改写
-   - 编辑修改功能
-   - 保存文案
+3. **深度生成**
+   - 审核事实与来源
+   - 确认或修改大纲
+   - 对话微调并保存定稿
 
 ## 常用命令
 
@@ -181,6 +183,10 @@ docker run -d --name attu -p 3000:3000 -e MILVUS_URL=host.docker.internal:19530 
 
 - [项目概述](docs/project-overview.md)
 - [技术架构](docs/technical-architecture.md)
+- [高并发异步架构实施说明](docs/high-concurrency-async-architecture.md)
+- [RocketMQ 文章生成异步调度与故障恢复](docs/rocketmq-generation-async.md)
+- [多线程与高并发处理说明（含关键代码）](docs/high-concurrency-code-guide.md)
+- [高并发第一阶段加固说明](docs/high-concurrency-phase-one.md)
 - [API接口](docs/api-reference.md)
 - [部署指南](docs/deployment-guide.md)
 

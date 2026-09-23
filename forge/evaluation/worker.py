@@ -18,7 +18,20 @@ from typing import Optional
 
 import redis
 
-from forge.config import REDIS_HOST, REDIS_PORT, EVAL_REDIS_DB, EVAL_QUEUE_NAME
+from forge.config import (
+    EVAL_QUEUE_NAME,
+    EVAL_REDIS_DB,
+    REDIS_HOST,
+    REDIS_PASSWORD,
+    REDIS_PORT,
+)
+from .article_expression import ArticleExpressionEvaluator
+from .article_queue import ARTICLE_FINALIZED_EVENT, article_hash
+from .article_storage import (
+    get_completed_article_expression,
+    get_final_article,
+    save_article_expression,
+)
 from .engine import EvaluationEngine
 from .storage import save_probe_log, get_session_probe_logs, save_evaluation_result
 
@@ -38,19 +51,74 @@ def _get_redis_client() -> redis.Redis:
         _redis_client = redis.Redis(
             host=REDIS_HOST,
             port=REDIS_PORT,
+            password=REDIS_PASSWORD,
             db=EVAL_REDIS_DB,
         )
     return _redis_client
 
 
 def should_trigger_evaluation(node_name: str) -> bool:
-    """判断是否应触发完整评估。
+    """节点探针不触发最终评估；深度流程由 article_finalized 事件触发。"""
+    return False
 
-    在以下节点触发：
-    - director（快速模式结束）
-    - finalize（深度模式结束）
-    """
-    return node_name in ["director", "finalize"]
+
+async def process_article_finalized(payload: dict) -> None:
+    """处理最终文章表达质量评估事件。"""
+    session_id = str(payload.get("session_id") or "")
+    queued_hash = str(payload.get("article_hash") or "")
+    target_platform = str(payload.get("target_platform") or "zhihu_article")
+    if not session_id or not queued_hash:
+        raise ValueError("article_finalized 事件缺少 session_id 或 article_hash")
+
+    final_article = await get_final_article(session_id)
+    if not final_article:
+        raise ValueError(f"会话 {session_id} 不存在最终文章")
+
+    # 始终评价数据库中的最新定稿，避免旧队列消息覆盖新定稿结果。
+    current_hash = article_hash(final_article)
+    if current_hash != queued_hash:
+        logger.info(
+            "[EvalWorker] Queued article is stale; evaluating latest draft: %s",
+            session_id,
+        )
+    completed = await get_completed_article_expression(session_id, current_hash)
+    if completed is not None:
+        logger.info(
+            "[EvalWorker] Article expression evaluation already completed: %s / %s",
+            session_id,
+            current_hash,
+        )
+        return
+
+    evaluator = None
+    try:
+        evaluator = ArticleExpressionEvaluator()
+        result = await evaluator.evaluate(final_article, target_platform)
+        await save_article_expression(session_id, current_hash, result.to_dict())
+        logger.info(
+            "[EvalWorker] Article expression evaluation completed: %s, score=%.4f",
+            session_id,
+            result.overall_score,
+        )
+    except Exception as e:
+        await save_article_expression(
+            session_id,
+            current_hash,
+            {
+                "status": "failed",
+                "model": getattr(evaluator, "model_name", None),
+                "error_message": str(e),
+            },
+        )
+        raise
+
+
+async def process_queue_message(payload: dict) -> None:
+    """按事件类型路由评估队列消息。"""
+    if payload.get("event_type") == ARTICLE_FINALIZED_EVENT:
+        await process_article_finalized(payload)
+        return
+    await process_probe_log(payload)
 
 
 async def process_probe_log(payload: dict) -> None:
@@ -167,7 +235,7 @@ async def run_evaluation_worker() -> None:
             payload = json.loads(payload_bytes)
 
             # 处理消息
-            await process_probe_log(payload)
+            await process_queue_message(payload)
 
         except redis.ConnectionError as e:
             logger.error(f"[EvalWorker] Redis connection error: {e}, reconnecting...")

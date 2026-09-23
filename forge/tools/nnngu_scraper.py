@@ -25,6 +25,17 @@ class NnnguScraper:
             "Accept": "text/html,application/xhtml+xml",
         })
 
+    @staticmethod
+    def _extract_list_article_ids(soup: BeautifulSoup) -> List[str]:
+        """Extract article IDs from the primary list, excluding sidebar links."""
+        article_ids = []
+        links = soup.select('div.news-content-view a[href*="/article/"]')
+        for link in links:
+            match = re.search(r"/article/(\d+)\.html", link.get("href", ""))
+            if match and match.group(1) not in article_ids:
+                article_ids.append(match.group(1))
+        return article_ids
+
     def get_article_ids_from_list(self, list_url: str, max_pages: int = 50) -> List[str]:
         """从列表页获取文章ID.
 
@@ -47,17 +58,11 @@ class NnnguScraper:
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "html.parser")
 
-                # 提取文章链接
-                links = soup.find_all("a", href=re.compile(r"/article/\d+\.html"))
                 page_ids = []
-                for link in links:
-                    href = link.get("href", "")
-                    match = re.search(r"/article/(\d+)\.html", href)
-                    if match:
-                        article_id = match.group(1)
-                        if article_id not in article_ids:
-                            page_ids.append(article_id)
-                            article_ids.append(article_id)
+                for article_id in self._extract_list_article_ids(soup):
+                    if article_id not in article_ids:
+                        page_ids.append(article_id)
+                        article_ids.append(article_id)
 
                 logger.info(f"[NnnguScraper] Page {page}: found {len(page_ids)} articles")
 

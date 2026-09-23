@@ -5,8 +5,12 @@
 
 import sys
 import os
-import re
 import logging
+import json
+import argparse
+from collections import Counter
+from datetime import date, datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 # 强制使用本地模型缓存，不联网
@@ -27,6 +31,8 @@ scrape_nnngu = nnngu_module.scrape_nnngu
 # 直接导入知识库模块
 from forge.knowledge.manager import get_knowledge_base
 from forge.knowledge.config import MILVUS_HOST, MILVUS_PORT
+from forge.knowledge.nnngu_classifier import classify_nnngu_article
+from forge.knowledge.text_splitter import ChineseTextSplitter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,53 +41,154 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def split_by_sentences(text: str, max_len: int = 500) -> list:
-    """按句子切分长文本."""
-    parts = re.split(r'([。！？\n]+)', text)
-    sentences = []
-    current = ""
-
-    for part in parts:
-        if re.match(r'[。！？\n]+', part):
-            current += part
-            if len(current.strip()) > 80:
-                sentences.append(current.strip())
-            current = ""
-        else:
-            current += part
-            if len(current) > max_len:
-                sentences.append(current.strip())
-                current = ""
-
-    if current.strip() and len(current.strip()) > 80:
-        sentences.append(current.strip())
-
-    return sentences
+def _strip_title_prefix(content: str, title: str) -> str:
+    prefix = f"[{title}] "
+    return content[len(prefix):] if content.startswith(prefix) else content
 
 
-def smart_split_content(content: str, min_len: int = 100, max_len: int = 500) -> list:
-    """智能切分内容.
+def _reconstruct_chunks(chunks: list[dict], title: str, overlap: int) -> str:
+    bodies = [_strip_title_prefix(chunk["content"], title) for chunk in chunks]
+    if not bodies:
+        return ""
 
-    策略：
-    1. 短文本（<max_len）：保持原样
-    2. 长文本（>max_len）：按句子切分
-    """
-    if len(content) <= max_len:
-        return [content]
+    reconstructed = bodies[0]
+    for body in bodies[1:]:
+        max_overlap = min(overlap, len(reconstructed), len(body))
+        shared = next(
+            (
+                size
+                for size in range(max_overlap, -1, -1)
+                if reconstructed.endswith(body[:size])
+            ),
+            0,
+        )
+        reconstructed += body[shared:]
+    return reconstructed
 
-    return split_by_sentences(content, max_len)
+
+def build_documents(articles: list) -> tuple[list[dict], dict]:
+    """Split articles and return import documents plus an audit report."""
+    splitter = ChineseTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+        min_chunk_size=100,
+        preserve_context=True,
+    )
+    documents = []
+    article_audits = []
+    classification_reference_date = date.today()
+
+    for article in articles:
+        article_id = str(article["id"])
+        title = article["title"]
+        content = article["content"]
+        category = article.get("category", "company_intro")
+        classification = classify_nnngu_article(
+            article,
+            reference_date=classification_reference_date,
+        )
+        normalized = splitter._clean_text(content)
+        chunks = splitter.split_text(content, {"title": title})
+        reconstructed = _reconstruct_chunks(chunks, title, splitter.chunk_overlap)
+
+        article_audits.append({
+            "article_id": article_id,
+            "title": title,
+            "source_url": article.get("url", ""),
+            "source_characters": len(normalized),
+            "chunk_count": len(chunks),
+            "chunk_lengths": [
+                len(_strip_title_prefix(chunk["content"], title))
+                for chunk in chunks
+            ],
+            "lossless": reconstructed == normalized,
+            "coverage_ratio": round(
+                SequenceMatcher(None, normalized, reconstructed).ratio(),
+                6,
+            ),
+            "classification": classification,
+        })
+
+        for index, chunk in enumerate(chunks):
+            documents.append({
+                "id": f"nnngu_{article_id}_chunk_{index:03d}",
+                "content": chunk["content"],
+                "metadata": {
+                    "category": category,
+                    "title": title,
+                    "source": "nnngu.com",
+                    "source_url": article.get("url", ""),
+                    "article_id": article_id,
+                    "chunk_index": index,
+                    "total_chunks": len(chunks),
+                    **classification,
+                },
+            })
+
+    chunk_lengths = [len(document["content"]) for document in documents]
+    document_ids = [document["id"] for document in documents]
+    secondary_categories = Counter(
+        item["classification"]["secondary_category"] or "not_applicable"
+        for item in article_audits
+    )
+    topic_tags = Counter(
+        tag
+        for item in article_audits
+        for tag in item["classification"]["topic_tags"].split(",")
+        if tag
+    )
+    validity_statuses = Counter(
+        item["classification"]["validity_status"] for item in article_audits
+    )
+    provinces = Counter(
+        item["classification"]["province"] or "unknown"
+        for item in article_audits
+    )
+    audit = {
+        "article_count": len(articles),
+        "chunk_count": len(documents),
+        "lossless_article_count": sum(item["lossless"] for item in article_audits),
+        "minimum_coverage_ratio": min(
+            (item["coverage_ratio"] for item in article_audits),
+            default=0,
+        ),
+        "duplicate_document_ids": len(document_ids) - len(set(document_ids)),
+        "classification_reference_date": classification_reference_date.isoformat(),
+        "classification": {
+            "secondary_categories": dict(secondary_categories),
+            "topic_tags": dict(topic_tags),
+            "validity_statuses": dict(validity_statuses),
+            "provinces": dict(provinces),
+        },
+        "chunk_length": {
+            "minimum": min(chunk_lengths, default=0),
+            "maximum": max(chunk_lengths, default=0),
+            "average": round(sum(chunk_lengths) / len(chunk_lengths), 2)
+            if chunk_lengths else 0,
+        },
+        "articles": article_audits,
+    }
+    return documents, audit
 
 
-def import_to_knowledge_base(articles: list):
+def save_json(path: Path, payload: dict | list) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def import_to_knowledge_base(documents: list[dict]):
     """导入文章到知识库.
 
     Args:
-        articles: 文章列表
+        documents: 已审计的知识片段
     """
     print("=" * 60)
     print("导入锐博官网内容到知识库")
     print("=" * 60)
-    print(f"文章数: {len(articles)}")
+    print(f"片段数: {len(documents)}")
     print(f"Milvus: {MILVUS_HOST}:{MILVUS_PORT}")
 
     # 连接知识库
@@ -96,46 +203,15 @@ def import_to_knowledge_base(articles: list):
         print("  docker-compose up -d")
         return
 
-    # 切分并准备文档
-    print("\n[步骤2] 智能切分...")
-    documents = []
-    chunk_count = 0
-
-    for article in articles:
-        article_id = article["id"]
-        title = article["title"]
-        content = article["content"]
-        category = article.get("category", "company_intro")
-
-        # 切分
-        chunks = smart_split_content(content)
-        for i, chunk in enumerate(chunks):
-            doc_id = f"nnngu_{article_id}_{i:02d}"
-            documents.append({
-                "id": doc_id,
-                "content": chunk,
-                "metadata": {
-                    "category": category,
-                    "title": title,
-                    "source": "nnngu.com",
-                    "article_id": article_id,
-                }
-            })
-            chunk_count += 1
-
-    print(f"  切分后 {chunk_count} 个片段")
-
-    # 批量导入
-    print("\n[步骤3] 批量导入...")
+    print("\n[步骤2] 批量导入...")
     kb.add_documents(documents)
 
     # 验证
-    print("\n[步骤4] 验证导入结果...")
+    print("\n[步骤3] 验证导入结果...")
     new_count = kb.count()
     print(f"  导入后文档数: {new_count} (新增 {new_count - current_count})")
 
-    # 测试搜索
-    print("\n[步骤5] 测试搜索...")
+    print("\n[步骤4] 测试搜索...")
     test_queries = ["锐博集团", "招聘", "劳务派遣", "人力资源"]
     for query in test_queries:
         results = kb.search(query, n_results=2)
@@ -150,20 +226,62 @@ def import_to_knowledge_base(articles: list):
     print("=" * 60)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="抓取并导入锐博官网知识库")
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        help="使用已保存的 raw-*.json 快照，不重新抓取官网",
+    )
+    return parser.parse_args()
+
+
 def main():
     """主函数."""
-    print("开始抓取锐博官网内容...")
+    args = parse_args()
 
-    # 抓取
-    articles = scrape_nnngu()
-    print(f"抓取到 {len(articles)} 篇文章")
+    if args.snapshot:
+        payload = json.loads(args.snapshot.read_text(encoding="utf-8"))
+        articles = payload["articles"]
+        print(f"从快照读取 {len(articles)} 篇文章: {args.snapshot}")
+    else:
+        print("开始抓取锐博官网内容...")
+        articles = scrape_nnngu()
+        print(f"抓取到 {len(articles)} 篇文章")
 
     if not articles:
         print("没有抓取到内容，退出")
         return
 
-    # 导入
-    import_to_knowledge_base(articles)
+    output_dir = Path("data") / "knowledge" / "nnngu"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    audit_path = output_dir / f"audit-{timestamp}.json"
+
+    if not args.snapshot:
+        snapshot_path = output_dir / f"raw-{timestamp}.json"
+        save_json(snapshot_path, {
+            "scraped_at": timestamp,
+            "source": "https://www.nnngu.com",
+            "articles": articles,
+        })
+        print(f"原始快照: {snapshot_path}")
+
+    documents, audit = build_documents(articles)
+    save_json(audit_path, audit)
+    print(f"切片审计: {audit_path}")
+    print(
+        f"审计结果: {audit['lossless_article_count']}/{audit['article_count']} "
+        f"篇无损，最低覆盖率 {audit['minimum_coverage_ratio']:.2%}，"
+        f"重复ID {audit['duplicate_document_ids']}"
+    )
+
+    if (
+        audit["lossless_article_count"] != audit["article_count"]
+        or audit["duplicate_document_ids"] != 0
+    ):
+        raise RuntimeError("切片审计未通过，已停止导入")
+
+    import_to_knowledge_base(documents)
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ def probe_node(
         "loop_iteration": loop_info.get("iteration", 0) if loop_info else 0,
         "metadata": {
             "target_platform": state_after.get("target_platform"),
-            "mode": state_after.get("mode", "fast"),
+            "mode": state_after.get("mode", "deep"),
         },
     }
 
@@ -110,7 +110,7 @@ def extract_key_metrics(state: Dict[str, Any]) -> Dict[str, Any]:
         - is_approved: 是否通过Critic
         - stage: 当前阶段
         - has_rag_context: 是否有RAG素材
-        - has_fact_sheet: 是否有Fact Sheet
+        - has_research_result: 是否有可追溯研究事实
     """
     draft = state.get("rewritten_draft", "") or state.get("current_draft", "") or ""
 
@@ -124,5 +124,5 @@ def extract_key_metrics(state: Dict[str, Any]) -> Dict[str, Any]:
         "is_approved": state.get("is_approved", False),
         "stage": state.get("stage"),
         "has_rag_context": bool(state.get("rag_context")),
-        "has_fact_sheet": bool(state.get("fact_sheet")),
+        "has_research_result": bool(state.get("research_result", {}).get("facts")),
     }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forge 文章表达质量评估"
+  short_description: "用 DeepEval 异步评估最终文章的结构、文笔与自然度"
+  default_prompt: "使用 $forge-article-eval 评估 Forge 最终文章的表达质量，并严格排除事实正确性。"

@@ -8,9 +8,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from forge.config import (
-    QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL, LLM_TIMEOUT,
+    QWEN_API_URL, QWEN_API_KEY, QWEN_MODEL, LLM_TIMEOUT, LLM_MAX_ATTEMPTS,
     LANGCHAIN_API_KEY, LANGCHAIN_TRACING_V2, LANGCHAIN_PROJECT
 )
+from forge.observability.metrics import record_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,13 @@ class LLMClient:
         if not QWEN_API_KEY:
             raise ValueError("QWEN_API_KEY not set in environment")
 
+        self.model = model or QWEN_MODEL
         self.llm = ChatOpenAI(
             base_url=QWEN_API_URL,
             api_key=QWEN_API_KEY,
-            model=model or QWEN_MODEL,
+            model=self.model,
             timeout=LLM_TIMEOUT,
+            max_retries=0,
         )
         logger.info(f"[LLM] ChatOpenAI initialized with model: {model or QWEN_MODEL}")
 
@@ -66,6 +69,7 @@ class LLMClient:
 
         try:
             response = await self.llm.ainvoke(messages)
+            record_llm_usage(response, model=self.model, role="generation")
             content = response.content
             if not content:
                 raise LLMClientError("Empty response from LLM")
@@ -75,7 +79,12 @@ class LLMClient:
             logger.error(f"[LLM] Chat failed: {e}")
             raise LLMClientError(f"LLM调用失败: {e}") from e
 
-    async def chat_with_retry(self, prompt: str, system_prompt: str = None, max_retries: int = 3) -> str:
+    async def chat_with_retry(
+        self,
+        prompt: str,
+        system_prompt: str = None,
+        max_retries: int | None = None,
+    ) -> str:
         """Send chat request with exponential backoff retry.
 
         Args:
@@ -89,12 +98,13 @@ class LLMClient:
         Raises:
             LLMClientError: If all retry attempts fail.
         """
-        for attempt in range(max_retries):
+        attempts = max_retries if max_retries is not None else LLM_MAX_ATTEMPTS
+        for attempt in range(attempts):
             try:
                 return await self.chat(prompt, system_prompt)
             except LLMClientError as e:
                 logger.warning(f"[LLM] Attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
+                if attempt == attempts - 1:
                     logger.error(f"[LLM] All retries exhausted")
                     raise
                 await asyncio.sleep(2 ** attempt)
@@ -110,11 +120,13 @@ class SyncLLMClient:
         if not QWEN_API_KEY:
             raise ValueError("QWEN_API_KEY not set in environment")
 
+        self.model = model or QWEN_MODEL
         self.llm = ChatOpenAI(
             base_url=QWEN_API_URL,
             api_key=QWEN_API_KEY,
-            model=model or QWEN_MODEL,
+            model=self.model,
             timeout=LLM_TIMEOUT,
+            max_retries=0,
         )
         logger.info(f"[LLM-Sync] ChatOpenAI initialized with model: {model or QWEN_MODEL}")
 
@@ -129,6 +141,7 @@ class SyncLLMClient:
 
         try:
             response = self.llm.invoke(messages)
+            record_llm_usage(response, model=self.model, role="generation")
             content = response.content
             if not content:
                 raise LLMClientError("Empty response from LLM")
@@ -138,15 +151,21 @@ class SyncLLMClient:
             logger.error(f"[LLM-Sync] Chat failed: {e}")
             raise LLMClientError(f"LLM调用失败: {e}") from e
 
-    def chat_with_retry(self, prompt: str, system_prompt: str = None, max_retries: int = 3) -> str:
+    def chat_with_retry(
+        self,
+        prompt: str,
+        system_prompt: str = None,
+        max_retries: int | None = None,
+    ) -> str:
         """Send chat request with exponential backoff retry (sync version)."""
         import time
-        for attempt in range(max_retries):
+        attempts = max_retries if max_retries is not None else LLM_MAX_ATTEMPTS
+        for attempt in range(attempts):
             try:
                 return self.chat(prompt, system_prompt)
             except LLMClientError as e:
                 logger.warning(f"[LLM-Sync] Attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
+                if attempt == attempts - 1:
                     logger.error(f"[LLM-Sync] All retries exhausted")
                     raise
                 time.sleep(2 ** attempt)

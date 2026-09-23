@@ -1,17 +1,18 @@
 """Knowledge base configuration for Milvus vector database."""
 
 import os
-from pathlib import Path
 
-# Milvus server connection (Docker)
-MILVUS_HOST = "127.0.0.1"
-MILVUS_PORT = "19530"
+# Milvus connection. Containers override the host with ``standalone`` while
+# local scripts keep using the published localhost port.
+MILVUS_HOST = os.environ.get("MILVUS_HOST", "127.0.0.1")
+MILVUS_PORT = os.environ.get("MILVUS_PORT", "19530")
 
 # Collection name
-COLLECTION_NAME = "ruibo_knowledge"
+COLLECTION_NAME = os.environ.get("MILVUS_COLLECTION_NAME", "ruibo_knowledge_v2")
 
-# Vector dimensions (BGE-large-zh-v1.5 produces 1024-dimensional vectors)
-VECTOR_DIMENSION = 1024
+# Embedding configuration. The dimension must match the Milvus collection.
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-v3")
+VECTOR_DIMENSION = int(os.environ.get("EMBEDDING_VECTOR_DIMENSION", "1024"))
 
 # Knowledge categories
 CATEGORIES = [

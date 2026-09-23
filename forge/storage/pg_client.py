@@ -9,7 +9,17 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
 
-from forge.config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE
+from forge.config import (
+    PG_DATABASE,
+    PG_HOST,
+    PG_PASSWORD,
+    PG_SSL,
+    PG_STATEMENT_CACHE_SIZE,
+    PG_POOL_MAX_SIZE,
+    PG_POOL_MIN_SIZE,
+    PG_PORT,
+    PG_USER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +59,10 @@ async def get_pg_pool() -> asyncpg.Pool:
                     user=PG_USER,
                     password=PG_PASSWORD,
                     database=PG_DATABASE,
-                    min_size=2,
-                    max_size=10,
+                    ssl=PG_SSL,
+                    statement_cache_size=PG_STATEMENT_CACHE_SIZE,
+                    min_size=PG_POOL_MIN_SIZE,
+                    max_size=PG_POOL_MAX_SIZE,
                 ),
                 timeout=5.0
             )
@@ -107,8 +119,9 @@ class PGSessionManager:
                 INSERT INTO sessions (
                     id, source_article, user_input, stage,
                     outline, outline_version, rag_context,
-                    current_draft, is_active, last_heartbeat
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    current_draft, is_active, last_heartbeat,
+                    research_result, quality_report
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 UUID(session_id),
                 json.dumps(data.get("source_article", {})),
@@ -120,6 +133,8 @@ class PGSessionManager:
                 data.get("current_draft"),
                 True,
                 datetime.now(),
+                json.dumps(data.get("research_result")) if data.get("research_result") else None,
+                json.dumps(data.get("quality_report")) if data.get("quality_report") else None,
             )
         logger.info(f"[PG] Session created: {session_id}")
         return True
@@ -184,8 +199,10 @@ class PGSessionManager:
                         user_input = $7,
                         last_heartbeat = $8,
                         is_active = $9,
+                        research_result = $10,
+                        quality_report = $11,
                         lock_version = lock_version + 1
-                    WHERE id = $1 AND lock_version = $10
+                    WHERE id = $1 AND lock_version = $12
                     """,
                     UUID(session_id),
                     data.get("stage"),
@@ -196,6 +213,8 @@ class PGSessionManager:
                     data.get("user_input"),
                     datetime.now(),
                     data.get("is_active", True),
+                    json.dumps(data.get("research_result")) if data.get("research_result") else None,
+                    json.dumps(data.get("quality_report")) if data.get("quality_report") else None,
                     data.get("lock_version", 1),
                 )
             else:
@@ -209,7 +228,9 @@ class PGSessionManager:
                         rag_context = $6,
                         user_input = $7,
                         last_heartbeat = $8,
-                        is_active = $9
+                        is_active = $9,
+                        research_result = $10,
+                        quality_report = $11
                     WHERE id = $1
                     """,
                     UUID(session_id),
@@ -221,6 +242,8 @@ class PGSessionManager:
                     data.get("user_input"),
                     datetime.now(),
                     data.get("is_active", True),
+                    json.dumps(data.get("research_result")) if data.get("research_result") else None,
+                    json.dumps(data.get("quality_report")) if data.get("quality_report") else None,
                 )
         return result == "UPDATE 1"
 
@@ -447,7 +470,7 @@ class PGSessionManager:
             if key in result and result[key] is not None:
                 result[key] = result[key].isoformat()
         # 处理 JSON 字段
-        json_fields = ["source_article", "outline", "metadata"]
+        json_fields = ["source_article", "outline", "metadata", "research_result", "quality_report"]
         for key in json_fields:
             if key in result and isinstance(result[key], str):
                 try:

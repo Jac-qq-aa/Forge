@@ -170,6 +170,30 @@ class TestPGSessionManager:
             assert result == True
 
     @pytest.mark.asyncio
+    async def test_update_session_persists_research_and_quality_reports(self, pg_manager):
+        """结构化事实与生成报告应写入 JSONB 参数。"""
+        mock_conn = AsyncMock()
+        mock_conn.execute.return_value = "UPDATE 1"
+        mock_pool = make_mock_pool(mock_conn)
+        research_result = {"facts": [{"fact_id": "F001"}]}
+        quality_report = {"generation_plan": {"mode": "single_pass"}}
+
+        with patch('forge.storage.pg_client.get_pg_pool', AsyncMock(return_value=mock_pool)):
+            result = await pg_manager.update_session(
+                TEST_SESSION_ID,
+                {
+                    "stage": "tuning",
+                    "research_result": research_result,
+                    "quality_report": quality_report,
+                },
+            )
+
+        assert result is True
+        args = mock_conn.execute.await_args.args
+        assert '"fact_id": "F001"' in args[10]
+        assert '"mode": "single_pass"' in args[11]
+
+    @pytest.mark.asyncio
     async def test_update_session_with_optimistic_lock(self, pg_manager):
         """测试乐观锁更新。"""
         mock_conn = AsyncMock()
@@ -234,3 +258,12 @@ class TestPGSessionManager:
         with patch('forge.storage.pg_client.get_pg_pool', AsyncMock(return_value=mock_pool)):
             result = await pg_manager.get_active_sessions()
             assert len(result) == 2
+
+    def test_row_to_dict_decodes_generation_json(self, pg_manager):
+        result = pg_manager._row_to_dict({
+            "research_result": '{"facts": []}',
+            "quality_report": '{"word_count": {"actual_chars": 800}}',
+        })
+
+        assert result["research_result"] == {"facts": []}
+        assert result["quality_report"]["word_count"]["actual_chars"] == 800

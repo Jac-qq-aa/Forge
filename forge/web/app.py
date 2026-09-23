@@ -1,34 +1,33 @@
 """FastAPI web application for Forge content workflow."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.requests import Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from jinja2 import Environment, FileSystemLoader
 import os
+from forge.observability.logging import configure_logging
+from forge.observability.metrics import install_http_metrics
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Setup logging (must be before lifespan)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)-12s | %(levelname)-8s | %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stdout,
-)
+configure_logging("web")
 logger = logging.getLogger("ForgeWeb")
 
 # Gateway API URL（环境变量配置）
@@ -36,6 +35,14 @@ GATEWAY_API_URL = os.getenv("GATEWAY_API_URL", "http://localhost:8001")
 
 from forge.storage.redis_client import close_redis_pool
 from forge.storage.pg_client import close_pg_pool, get_pg_pool, is_valid_uuid
+from forge.security.auth import (
+    access_token_from_request,
+    access_token_from_websocket,
+    authenticate_websocket,
+    Principal,
+    require_admin,
+    require_principal,
+)
 
 
 @asynccontextmanager
@@ -57,6 +64,13 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[Lifespan] Checkpointer init failed: {e}")
 
     yield
+
+    try:
+        from forge.async_jobs.events import close_job_event_hub
+        await close_job_event_hub()
+        logger.info("[Lifespan] Job event hub closed")
+    except Exception as e:
+        logger.warning(f"[Lifespan] Job event hub close error: {e}")
 
     # 关闭时清理 checkpointer
     try:
@@ -80,27 +94,35 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[Lifespan] PG close error: {e}")
 
 
-from forge.graph.workflow import workflow  # 直接从子模块导入，避免 __getattr__ 循环
-from forge.graph import create_initial_state
-from forge.graph.state import UnifiedState, create_unified_state
-# unified_workflow 现在是异步初始化，使用 get_unified_workflow
-from forge.graph.unified_workflow import get_unified_workflow
-from forge.deep_mode import (
-    DeepModeSession,
-    SessionNotFoundError,
+from forge.deep_mode.errors import (
     InvalidStageError,
     OutlineRevisionLimitError,
+    SessionNotFoundError,
 )
+from forge.deep_mode.session_state import DeepModeSession
 from forge.deep_mode.session_manager import get_session_manager
-from forge.deep_mode.workflow import run_plan_execute
 from forge.evaluation.storage import (
     get_evaluation_result,
     get_session_probe_logs,
     get_evaluation_stats,
 )
+from forge.evaluation.article_storage import get_latest_article_expression
 
 # Create FastAPI app with lifespan
 app = FastAPI(title="Forge 内容转换工作流", lifespan=lifespan)
+install_http_metrics(app, "web")
+
+
+@app.get("/live")
+async def live():
+    return {"status": "alive"}
+
+
+@app.get("/ready")
+async def ready():
+    if await get_pg_pool() is None:
+        raise HTTPException(status_code=503, detail="PostgreSQL unavailable")
+    return {"status": "ready"}
 
 # CORS configuration for React frontend
 app.add_middleware(
@@ -114,6 +136,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def authenticate_web_api(request: Request, call_next):
+    public_paths = {"/api/status"}
+    if (
+        request.url.path.startswith("/api/")
+        and request.url.path not in public_paths
+        and request.method != "OPTIONS"
+    ):
+        try:
+            await require_principal(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
+            )
+    return await call_next(request)
 
 # Mount static files and templates
 BASE_DIR = Path(__file__).parent
@@ -157,23 +198,8 @@ def parse_count(value) -> int:
 class SearchRequest(BaseModel):
     source: str
     source_platform: str = "zhihu"
-    max_results: int = 5
-    search_mode: str = "keyword"  # "keyword" or "blogger"
-
-
-class ProcessRequest(BaseModel):
-    source_url: str
-    source_platform: str
-    target_platform: str
-    generate_video: bool = False
-
-
-class ProcessManualRequest(BaseModel):
-    title: str
-    text: str
-    source_platform: str = "manual"
-    target_platform: str
-    generate_video: bool = False
+    max_results: int = Field(default=5, ge=1, le=20)
+    search_mode: Literal["keyword", "blogger"] = "keyword"
 
 
 class BloggerRequest(BaseModel):
@@ -187,15 +213,67 @@ class ArticleDetailRequest(BaseModel):
     source_platform: str = "zhihu"
 
 
-class ProcessMultiRequest(BaseModel):
-    question_url: str
-    answer_urls: list[str]
-    source_platform: str
-    target_platform: str
-    generate_video: bool = False
-
-
 # Routes
+
+
+async def _submit_zhihu_job(
+    operation: str,
+    payload: dict,
+    request: Request,
+) -> JSONResponse:
+    from forge.async_jobs.config import ROCKETMQ_ZHIHU_TOPIC
+    from forge.async_jobs.repository import (
+        JobStoreUnavailable,
+        TenantActiveJobLimitExceeded,
+    )
+    from forge.async_jobs.service import submit_job
+    from forge.scraping.config import ZHIHU_REQUEST_DEDUP_SECONDS
+    from forge.security.quota import QuotaStoreUnavailable, TenantRateLimitExceeded
+
+    principal = await require_principal(request)
+    tenant_id = principal.tenant_id
+    canonical = json.dumps(
+        {"operation": operation, "payload": payload},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    dedup_window = max(1, ZHIHU_REQUEST_DEDUP_SECONDS)
+    idempotency_key = f"zhihu:{digest[:48]}:{int(time.time()) // dedup_window}"
+    try:
+        job, created = await submit_job(
+            operation=operation,
+            payload=payload,
+            tenant_id=tenant_id,
+            actor_id=principal.subject,
+            idempotency_key=idempotency_key,
+            topic=ROCKETMQ_ZHIHU_TOPIC,
+        )
+    except JobStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except TenantRateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except TenantActiveJobLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except QuotaStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job["id"],
+            "operation": job["operation"],
+            "status": job["status"],
+            "deduplicated": not created,
+            "status_url": f"/api/jobs/{job['id']}",
+        },
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Render main page."""
@@ -204,25 +282,21 @@ async def index(request: Request):
 
 
 @app.post("/api/search")
-async def search_articles(request: SearchRequest):
+async def search_articles(request: SearchRequest, http_request: Request):
     """Search articles from platform."""
     logger.info(f"[API] Search request: {request}")
 
     try:
-        articles = []
-
         if request.source_platform == "zhihu":
-            from forge.tools.zhihu_scraper_persistent import ZhihuScraper
-            async with ZhihuScraper() as scraper:
-                if request.search_mode == "blogger":
-                    articles = await scraper.get_user_articles(request.source, request.max_results)
-                else:
-                    articles = await scraper.search_articles(request.source, request.max_results)
+            return await _submit_zhihu_job(
+                "zhihu_search",
+                request.model_dump(),
+                http_request,
+            )
 
         elif request.source_platform == "wechat":
             from forge.tools.wechat_scraper import WechatScraper
             async with WechatScraper() as scraper:
-                # 微信公众号只支持关键词搜索
                 articles = await scraper.search_articles(request.source, request.max_results)
 
         else:
@@ -249,6 +323,8 @@ async def search_articles(request: SearchRequest):
         logger.info(f"[API] Found {len(result)} articles")
         return {"success": True, "articles": result, "count": len(result)}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[API] Search error: {e}")
         return {"success": False, "error": str(e), "articles": []}
@@ -291,192 +367,40 @@ async def remove_blogger(blogger_id: str):
         return {"success": False, "error": str(e)}
 
 
-@app.get("/api/recommend_articles")
-async def get_recommend_articles(max_per_blogger: int = 3):
+@app.post("/api/recommend_articles")
+async def get_recommend_articles(request: Request, max_per_blogger: int = 3):
     """获取关注博主的推荐文章."""
     from forge.storage.blogger_store import load_bloggers
-    from forge.tools.zhihu_scraper_persistent import ZhihuScraper
 
-    bloggers = load_bloggers()
+    bloggers = load_bloggers()[:50]
     if not bloggers:
         return {"success": True, "articles": [], "message": "暂无关注博主，请先添加"}
+    if max_per_blogger < 1 or max_per_blogger > 10:
+        raise HTTPException(status_code=400, detail="max_per_blogger 必须在 1-10 之间")
 
-    all_articles = []
-    try:
-        async with ZhihuScraper() as scraper:
-            for blogger in bloggers:
-                blogger_id = blogger["id"]
-                blogger_name = blogger.get("name", blogger_id)
-                logger.info(f"[API] 获取博主文章: {blogger_name}")
-
-                try:
-                    articles = await scraper.get_user_articles(blogger_id, max_per_blogger)
-                    for article in articles:
-                        article["blogger_name"] = blogger_name
-                        article["blogger_id"] = blogger_id
-                        article["likes"] = parse_count(article.get("likes") or article.get("like_count") or article.get("vote_count") or article.get("upvote_count") or article.get("likes_text"))
-                    all_articles.extend(articles)
-                except Exception as e:
-                    logger.warning(f"[API] 获取博主 {blogger_name} 文章失败: {e}")
-                    continue
-
-        logger.info(f"[API] 推荐文章共 {len(all_articles)} 篇")
-        return {"success": True, "articles": all_articles, "count": len(all_articles)}
-
-    except Exception as e:
-        logger.error(f"[API] 推荐文章获取失败: {e}")
-        return {"success": False, "error": str(e), "articles": []}
+    return await _submit_zhihu_job(
+        "zhihu_recommend_articles",
+        {"bloggers": bloggers, "max_per_blogger": max_per_blogger},
+        request,
+    )
 
 
 @app.post("/api/article_detail")
-async def get_article_detail(request: ArticleDetailRequest):
+async def get_article_detail(request: ArticleDetailRequest, http_request: Request):
     """按 URL 获取文章全文，用于推荐文章弹窗展开全文."""
     try:
         if request.source_platform != "zhihu":
             raise HTTPException(status_code=400, detail=f"不支持的平台: {request.source_platform}")
 
-        from forge.tools.zhihu_scraper_persistent import ZhihuScraper
-        async with ZhihuScraper() as scraper:
-            article = await scraper.scrape_by_url(request.source_url)
-
-        return {
-            "success": True,
-            "article": {
-                "title": article.get("title", "无标题"),
-                "text": article.get("text") or article.get("content") or article.get("summary") or "",
-                "summary": article.get("summary", ""),
-                "source_url": article.get("source_url", request.source_url),
-                "likes": parse_count(article.get("likes") or article.get("like_count") or article.get("vote_count") or article.get("upvote_count") or article.get("likes_text")),
-            },
-        }
+        return await _submit_zhihu_job(
+            "zhihu_article_detail",
+            request.model_dump(),
+            http_request,
+        )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"[API] 文章详情获取失败: {e}")
-        return {"success": False, "error": str(e)}
-
-
-@app.post("/api/process")
-async def process_article(request: ProcessRequest):
-    """Process selected article through workflow."""
-    logger.info(f"[API] Process request: {request}")
-
-    try:
-        # Create state
-        state = create_initial_state(request.source_url)
-        state["source_platform"] = request.source_platform
-        state["target_platform"] = request.target_platform
-        state["generate_video"] = request.generate_video
-        state["skip_publish"] = True
-
-        # Run workflow
-        result = await workflow.ainvoke(state)
-
-        # Debug: log all keys in result
-        logger.info(f"[API] Result keys: {list(result.keys())}")
-
-        # Extract result
-        script_path = result.get("script_path", "")
-        video_path = result.get("video_path", "")
-        final_script = result.get("final_script", "")
-
-        # Extract original content
-        raw_content = result.get("raw_content", {})
-        logger.info(f"[API] Raw content keys: {list(raw_content.keys()) if raw_content else 'None'}")
-        original_title = raw_content.get("title", "")
-        original_text = raw_content.get("text", "")
-        original_author = raw_content.get("author", "")
-        logger.info(f"[API] Original title: {original_title[:30] if original_title else 'None'}...")
-        logger.info(f"[API] Original text length: {len(original_text) if original_text else 0}")
-
-        # Read script content
-        script_content = ""
-        if script_path:
-            try:
-                with open(script_path, "r", encoding="utf-8") as f:
-                    script_content = f.read()
-            except Exception as e:
-                logger.warning(f"[API] Failed to read script: {e}")
-
-        logger.info(f"[API] Process complete: {script_path}")
-
-        response_data = {
-            "success": True,
-            "script_path": script_path,
-            "video_path": video_path,
-            "script_content": script_content,
-            "final_script": final_script[:500] + "..." if len(final_script) > 500 else final_script,
-            "original_title": original_title,
-            "original_text": original_text,
-            "original_author": original_author,
-        }
-
-        logger.info(f"[API] Response data keys: {list(response_data.keys())}")
-        logger.info(f"[API] Response original_title: {original_title[:30] if original_title else 'None'}")
-        logger.info(f"[API] Response original_text_len: {len(original_text) if original_text else 0}")
-
-        return response_data
-
-    except Exception as e:
-        logger.error(f"[API] Process error: {e}")
-        return {"success": False, "error": str(e)}
-
-
-@app.post("/api/process_manual")
-async def process_manual_input(request: ProcessManualRequest):
-    """Process manually input content through workflow."""
-    logger.info(f"[API] Process manual input: title='{request.title[:30]}...', text_len={len(request.text)}, generate_video={request.generate_video}")
-
-    try:
-        # Create raw_content from user input
-        raw_content = {
-            "title": request.title,
-            "text": request.text,
-            "author": "",
-            "source_url": "",
-            "images": [],
-        }
-
-        # Create state
-        state = create_initial_state("manual_input")
-        state["source_platform"] = "manual"
-        state["target_platform"] = request.target_platform
-        state["raw_content"] = raw_content
-        state["generate_video"] = request.generate_video
-        state["skip_publish"] = True
-
-        # Run workflow
-        result = await workflow.ainvoke(state)
-
-        # Extract result
-        script_path = result.get("script_path", "")
-        video_path = result.get("video_path", "")
-        final_script = result.get("final_script", "")
-
-        # Read script content
-        script_content = ""
-        if script_path:
-            try:
-                with open(script_path, "r", encoding="utf-8") as f:
-                    script_content = f.read()
-            except Exception as e:
-                logger.warning(f"[API] Failed to read script: {e}")
-
-        logger.info(f"[API] Manual input process complete: {script_path}")
-
-        return {
-            "success": True,
-            "script_path": script_path,
-            "video_path": video_path,
-            "script_content": script_content,
-            "final_script": final_script[:500] + "..." if len(final_script) > 500 else final_script,
-            "original_title": request.title,
-            "original_text": request.text,
-            "original_author": "",
-        }
-
-    except Exception as e:
-        logger.error(f"[API] Process manual error: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -641,7 +565,9 @@ class CreateSessionRequest(BaseModel):
     """创建会话请求。"""
     article_id: str
     source_article: dict
+    memory_owner_id: str = "local-user"
     user_input: str = None  # 用户改写需求
+    target_platform: str = "zhihu_article"
 
 
 class OutlineActionRequest(BaseModel):
@@ -649,6 +575,14 @@ class OutlineActionRequest(BaseModel):
     session_id: str
     action: str  # "accept" or "modify"
     modification: str = None  # 修改意见（modify 时需要）
+
+
+class FactReviewRequest(BaseModel):
+    """事实清单审核请求。"""
+    session_id: str
+    action: str
+    reviews: list[dict] = Field(default_factory=list)
+    research_request: str = None
 
 
 class FinalizeRequest(BaseModel):
@@ -862,96 +796,19 @@ async def upload_image(request: Request):
 
 class GetAnswersRequest(BaseModel):
     question_url: str
-    max_answers: int = 10
+    max_answers: int = Field(default=10, ge=1, le=50)
 
 
 @app.post("/api/get_answers")
-async def get_answers(request: GetAnswersRequest):
+async def get_answers(request: GetAnswersRequest, http_request: Request):
     """获取知乎问题下的回答列表，筛选后返回。"""
     logger.info(f"[API] Get answers request: {request.question_url}")
 
-    try:
-        from forge.tools.zhihu_scraper_persistent import ZhihuScraper
-        async with ZhihuScraper() as scraper:
-            result = await scraper.get_question_answers(
-                request.question_url,
-                request.max_answers
-            )
-
-        logger.info(f"[API] Found {len(result.get('answers', []))} answers")
-        return {"success": True, **result}
-
-    except Exception as e:
-        logger.error(f"[API] Get answers error: {e}")
-        return {"success": False, "error": str(e), "answers": []}
-
-
-@app.post("/api/process_multi")
-async def process_multi_answers(request: ProcessMultiRequest):
-    """处理多个回答，合并后洗稿。"""
-    logger.info(f"[API] Process multi request: {len(request.answer_urls)} answers, generate_video={request.generate_video}")
-
-    try:
-        from forge.tools.zhihu_scraper_persistent import ZhihuScraper
-
-        # 获取所有回答内容
-        all_answers = []
-        async with ZhihuScraper() as scraper:
-            for answer_url in request.answer_urls:
-                content = await scraper.scrape_answer(answer_url)
-                if content.get("text"):
-                    all_answers.append(content)
-
-        # 合并内容
-        combined_text = "\n\n---\n\n".join([a.get("text", "") for a in all_answers])
-        combined_title = all_answers[0].get("title", "") if all_answers else ""
-
-        # 创建合并后的 raw_content
-        combined_content = {
-            "title": combined_title,
-            "text": combined_text,
-            "likes": sum(a.get("likes", 0) for a in all_answers),
-            "images": [],
-            "source_url": request.question_url,
-        }
-
-        # 创建 state 并处理
-        state = create_initial_state(request.question_url)
-        state["source_platform"] = request.source_platform
-        state["target_platform"] = request.target_platform
-        state["raw_content"] = combined_content  # 直接传入合并内容
-        state["generate_video"] = request.generate_video
-        state["skip_publish"] = True
-
-        # Run workflow
-        result = await workflow.ainvoke(state)
-
-        # 提取结果
-        script_path = result.get("script_path", "")
-        final_script = result.get("final_script", "")
-
-        # 读取文案
-        script_content = ""
-        if script_path:
-            try:
-                with open(script_path, "r", encoding="utf-8") as f:
-                    script_content = f.read()
-            except Exception as e:
-                logger.warning(f"[API] Failed to read script: {e}")
-
-        return {
-            "success": True,
-            "script_path": script_path,
-            "script_content": script_content,
-            "final_script": final_script,
-            "original_title": combined_title,
-            "original_text": combined_text,  # 返回完整原文，不截断
-            "answer_count": len(all_answers),
-        }
-
-    except Exception as e:
-        logger.error(f"[API] Process multi error: {e}")
-        return {"success": False, "error": str(e)}
+    return await _submit_zhihu_job(
+        "zhihu_question_answers",
+        request.model_dump(),
+        http_request,
+    )
 
 
 @app.get("/api/download_file")
@@ -1036,8 +893,17 @@ async def download_task_dir(task_dir: str):
 # ========== 深度生成模式端点（Gateway API 代理） ==========
 
 
+async def _gateway_job_headers(request: Request) -> dict[str, str]:
+    await require_principal(request)
+    headers = {"Authorization": f"Bearer {access_token_from_request(request)}"}
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
+
+
 @app.post("/api/deep_mode/create_session")
-async def api_create_deep_mode_session(request: CreateSessionRequest):
+async def api_create_deep_mode_session(request: CreateSessionRequest, http_request: Request):
     """创建深度生成会话 - 代理到 Gateway API（LangGraph Server 模式）。
 
     通过 Gateway API 调用 LangGraph Server，使用 thread_id 持久化 interrupt 状态。
@@ -1051,13 +917,18 @@ async def api_create_deep_mode_session(request: CreateSessionRequest):
         try:
             resp = await client.post(
                 f"{GATEWAY_API_URL}/api/deep_mode/create_session",
+                headers=await _gateway_job_headers(http_request),
                 json={
                     "article_id": request.article_id,
                     "source_article": request.source_article,
                     "user_input": request.user_input or "",
+                    "target_platform": request.target_platform,
+                    "memory_owner_id": request.memory_owner_id,
                 },
             )
             result = resp.json()
+            if result.get("job_id"):
+                return JSONResponse(status_code=resp.status_code, content=result)
             thread_id = result["session_id"]  # Gateway 返回的是 LangGraph thread_id
 
             # 用 thread_id 在 session_manager 创建会话记录（用于历史）
@@ -1070,12 +941,13 @@ async def api_create_deep_mode_session(request: CreateSessionRequest):
 
             # 同步状态
             if result.get("hil_status") == "interrupted":
-                await session_manager.update_session(
-                    thread_id,
-                    outline=result.get("outline", ""),
-                    outline_version=result.get("outline_version", 1),
-                    stage=result.get("stage", "waiting_outline"),
-                )
+                update_values = {"stage": result.get("stage", "waiting_facts")}
+                if result.get("interrupt_type") == "fact_approval":
+                    update_values["research_result"] = result.get("research_result", {})
+                else:
+                    update_values["outline"] = result.get("outline", "")
+                    update_values["outline_version"] = result.get("outline_version", 1)
+                await session_manager.update_session(thread_id, **update_values)
 
             result["article_id"] = request.article_id
             return result
@@ -1089,12 +961,13 @@ async def api_create_deep_mode_session(request: CreateSessionRequest):
 
 
 @app.get("/api/deep_mode/session/{session_id}")
-async def api_get_session_status(session_id: str):
+async def api_get_session_status(session_id: str, http_request: Request):
     """获取会话状态。
 
     使用 .get() 安全访问字段，防止 KeyError。
     正确处理 load_session 返回 None 的情况。
     """
+    await _require_owned_session(http_request, session_id)
     session_manager = get_session_manager()
 
     try:
@@ -1130,17 +1003,47 @@ def _serialize_session_response(session: dict, session_id: str) -> dict:
         "outline_version": session.get("outline_version", 0),
         "draft_v1": session.get("draft_v1"),
         "current_draft": session.get("current_draft"),
+        "research_result": session.get("research_result"),
+        "quality_report": session.get("quality_report"),
         "created_at": session.get("created_at", ""),
         "updated_at": session.get("updated_at", ""),
     }
 
 
+async def _require_owned_session(http_request: Request, session_id: str):
+    from forge.async_jobs.repository import JobRepository
+
+    principal = await require_principal(http_request)
+    try:
+        owned = await JobRepository().owns_session(
+            session_id,
+            principal.tenant_id,
+            principal.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    if not owned:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return principal
+
+
+async def _owned_session_ids(http_request: Request) -> set[str]:
+    from forge.async_jobs.repository import JobRepository
+
+    principal = await require_principal(http_request)
+    return await JobRepository().list_owned_session_ids(
+        principal.tenant_id,
+        principal.subject,
+    )
+
+
 @app.post("/api/deep_mode/update_outline")
-async def api_update_outline(request: UpdateOutlineRequest):
+async def api_update_outline(request: UpdateOutlineRequest, http_request: Request):
     """直接更新大纲内容（用户手动编辑后）。
 
     同时更新本地 SessionManager 和 Gateway/LangGraph，保证状态一致性。
     """
+    await _require_owned_session(http_request, request.session_id)
     logger.info(f"[API] Update outline: session={request.session_id}")
 
     session_manager = get_session_manager()
@@ -1164,6 +1067,7 @@ async def api_update_outline(request: UpdateOutlineRequest):
             try:
                 resp = await client.post(
                     f"{GATEWAY_API_URL}/api/deep_mode/update_outline",
+                    headers=await _gateway_job_headers(http_request),
                     json={
                         "session_id": request.session_id,
                         "outline": request.outline,
@@ -1187,7 +1091,7 @@ async def api_update_outline(request: UpdateOutlineRequest):
 
 
 @app.post("/api/deep_mode/outline_action")
-async def api_outline_action(request: OutlineActionRequest):
+async def api_outline_action(request: OutlineActionRequest, http_request: Request):
     """大纲确认或修改 - 代理到 Gateway API（LangGraph Server 模式）。"""
     logger.info(f"[API] Outline action: session={request.session_id}, action={request.action}")
 
@@ -1198,6 +1102,7 @@ async def api_outline_action(request: OutlineActionRequest):
         try:
             resp = await client.post(
                 f"{GATEWAY_API_URL}/api/deep_mode/outline_action",
+                headers=await _gateway_job_headers(http_request),
                 json={
                     "session_id": request.session_id,
                     "action": request.action,
@@ -1205,12 +1110,16 @@ async def api_outline_action(request: OutlineActionRequest):
                 },
             )
             result = resp.json()
+            if result.get("job_id"):
+                return JSONResponse(status_code=resp.status_code, content=result)
 
             # 同步状态到 session_manager
             if result.get("stage") == "tuning":
                 await session_manager.update_session(
                     request.session_id,
                     current_draft=result.get("draft", ""),
+                    research_result=result.get("research_result", {}),
+                    quality_report=result.get("quality_report", {}),
                     stage="tuning",
                 )
             elif result.get("stage") == "waiting_outline":
@@ -1219,6 +1128,12 @@ async def api_outline_action(request: OutlineActionRequest):
                     outline=result.get("outline", ""),
                     outline_version=result.get("outline_version", 1),
                     stage="waiting_outline",
+                )
+            elif result.get("stage") == "waiting_facts":
+                await session_manager.update_session(
+                    request.session_id,
+                    research_result=result.get("research_result", {}),
+                    stage="waiting_facts",
                 )
 
             return result
@@ -1231,8 +1146,55 @@ async def api_outline_action(request: OutlineActionRequest):
             raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/deep_mode/fact_action")
+async def api_fact_action(request: FactReviewRequest, http_request: Request):
+    """事实审核 - 代理到 Gateway API 并同步本地会话。"""
+    logger.info(
+        "[API] Fact action: session=%s action=%s",
+        request.session_id,
+        request.action,
+    )
+    session_manager = get_session_manager()
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        try:
+            resp = await client.post(
+                f"{GATEWAY_API_URL}/api/deep_mode/fact_action",
+                headers=await _gateway_job_headers(http_request),
+                json={
+                    "session_id": request.session_id,
+                    "action": request.action,
+                    "reviews": request.reviews,
+                    "research_request": request.research_request or "",
+                },
+            )
+            result = resp.json()
+            if result.get("job_id"):
+                return JSONResponse(status_code=resp.status_code, content=result)
+            if result.get("stage") == "waiting_facts":
+                await session_manager.update_session(
+                    request.session_id,
+                    research_result=result.get("research_result", {}),
+                    stage="waiting_facts",
+                )
+            elif result.get("stage") == "waiting_outline":
+                await session_manager.update_session(
+                    request.session_id,
+                    outline=result.get("outline", ""),
+                    outline_version=result.get("outline_version", 1),
+                    research_result=result.get("research_result", {}),
+                    stage="waiting_outline",
+                )
+            return result
+        except httpx.RequestError as e:
+            logger.error(f"[API] Gateway API request failed: {e}")
+            raise HTTPException(status_code=503, detail=f"Gateway API unavailable: {e}")
+        except Exception as e:
+            logger.error(f"[API] Fact action failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/deep_mode/finalize")
-async def api_finalize_session(request: FinalizeRequest):
+async def api_finalize_session(request: FinalizeRequest, http_request: Request):
     """定稿会话 - 代理到 Gateway API（LangGraph Server 模式）。
 
     使用传入的 content 作为最终稿件，保证用户看到的和历史保存的一致。
@@ -1246,12 +1208,15 @@ async def api_finalize_session(request: FinalizeRequest):
         try:
             resp = await client.post(
                 f"{GATEWAY_API_URL}/api/deep_mode/finalize",
+                headers=await _gateway_job_headers(http_request),
                 json={
                     "session_id": request.session_id,
                     "content": request.content or "",
                 },
             )
             result = resp.json()
+            if result.get("job_id"):
+                return JSONResponse(status_code=resp.status_code, content=result)
 
             # 使用传入的 content 或 Gateway 返回的 final_draft
             final_draft = request.content or result.get("final_draft", "")
@@ -1274,9 +1239,55 @@ async def api_finalize_session(request: FinalizeRequest):
             raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/jobs/{job_id}")
+async def api_get_job(job_id: str, request: Request):
+    """代理 Gateway 异步任务状态。"""
+    await require_principal(request)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.get(
+                f"{GATEWAY_API_URL}/api/jobs/{job_id}",
+                headers={"Authorization": f"Bearer {access_token_from_request(request)}"},
+            )
+            return JSONResponse(status_code=response.status_code, content=response.json())
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Gateway API unavailable: {exc}",
+            ) from exc
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def api_get_job_events(job_id: str, request: Request):
+    """从本地任务存储向浏览器推送 SSE 状态事件。"""
+    from forge.async_jobs.events import stream_job_events
+    from forge.async_jobs.repository import JobRepository
+
+    principal = await require_principal(request)
+    try:
+        job = await JobRepository().get_job(
+            job_id,
+            principal.tenant_id,
+            principal.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="job_id 必须是 UUID") from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return StreamingResponse(
+        stream_job_events(job_id, principal.tenant_id, principal.subject),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.delete("/api/deep_mode/session/{session_id}")
-async def api_cancel_session(session_id: str):
+async def api_cancel_session(session_id: str, http_request: Request):
     """取消会话。"""
+    await _require_owned_session(http_request, session_id)
     logger.info(f"[API] Cancel session: {session_id}")
 
     session_manager = get_session_manager()
@@ -1292,8 +1303,9 @@ async def api_cancel_session(session_id: str):
 
 
 @app.delete("/api/deep_mode/history/{session_id}")
-async def api_delete_history_session(session_id: str):
+async def api_delete_history_session(session_id: str, http_request: Request):
     """软删除历史记录。"""
+    await _require_owned_session(http_request, session_id)
     logger.info(f"[API] Delete history session: {session_id}")
 
     session_manager = get_session_manager()
@@ -1309,8 +1321,11 @@ async def api_delete_history_session(session_id: str):
 
 
 @app.post("/api/deep_mode/history/batch_delete")
-async def api_batch_delete_history(request: BatchDeleteRequest):
+async def api_batch_delete_history(request: BatchDeleteRequest, http_request: Request):
     """批量软删除历史记录。"""
+    owned_ids = await _owned_session_ids(http_request)
+    if not set(request.session_ids).issubset(owned_ids):
+        raise HTTPException(status_code=404, detail="Session not found")
     logger.info(f"[API] Batch delete {len(request.session_ids)} sessions")
 
     session_manager = get_session_manager()
@@ -1324,14 +1339,15 @@ async def api_batch_delete_history(request: BatchDeleteRequest):
 
 
 @app.delete("/api/deep_mode/history/clear_all")
-async def api_clear_all_history():
+async def api_clear_all_history(http_request: Request):
     """清空所有历史记录。"""
-    logger.info(f"[API] Clear all history")
+    owned_ids = await _owned_session_ids(http_request)
+    logger.info("[API] Clear tenant history")
 
     session_manager = get_session_manager()
 
     try:
-        count = await session_manager.soft_delete_all_sessions()
+        count = await session_manager.soft_delete_sessions(list(owned_ids))
         return {"success": True, "status": "deleted", "count": count}
     except Exception as e:
         logger.error(f"[API] Clear all error: {e}")
@@ -1339,10 +1355,19 @@ async def api_clear_all_history():
 
 
 @app.get("/api/deep_mode/sessions")
-async def api_list_sessions(article_id: str = None, stage: str = None):
+async def api_list_sessions(
+    http_request: Request,
+    article_id: str = None,
+    stage: str = None,
+):
     """列出会话。"""
     session_manager = get_session_manager()
     sessions = await session_manager.list_sessions(article_id=article_id, stage=stage)
+    owned_ids = await _owned_session_ids(http_request)
+    sessions = [
+        session for session in sessions
+        if str(session.get("session_id") or session.get("id")) in owned_ids
+    ]
 
     return {
         "sessions": [
@@ -1363,26 +1388,34 @@ async def api_list_sessions(article_id: str = None, stage: str = None):
 
 @app.get("/api/deep_mode/history")
 async def get_deep_mode_history(
+    http_request: Request,
     limit: int = 20,
     offset: int = 0
 ):
     """获取历史会话列表（类似 ChatGPT）。"""
     session_manager = get_session_manager()
     sessions = await session_manager.get_history_sessions(limit, offset)
+    owned_ids = await _owned_session_ids(http_request)
+    sessions = [
+        session for session in sessions
+        if str(session.get("session_id") or session.get("id")) in owned_ids
+    ]
     return {"sessions": sessions, "total": len(sessions)}
 
 
 @app.get("/api/deep_mode/session/{session_id}/messages")
-async def get_session_messages(session_id: str):
+async def get_session_messages(session_id: str, http_request: Request):
     """获取会话完整消息历史。"""
+    await _require_owned_session(http_request, session_id)
     session_manager = get_session_manager()
     messages = await session_manager.get_session_messages(session_id)
     return {"session_id": session_id, "messages": messages}
 
 
 @app.post("/api/deep_mode/session/{session_id}/restore")
-async def restore_session(session_id: str):
+async def restore_session(session_id: str, http_request: Request):
     """恢复中断的会话。"""
+    await _require_owned_session(http_request, session_id)
     session_manager = get_session_manager()
     session = await session_manager.load_session(session_id)
     if not session:
@@ -1390,174 +1423,22 @@ async def restore_session(session_id: str):
     return {"session": _serialize_session_response(session, session_id), "restored": True}
 
 
-# ========== 统一 Workflow API（融合快速/深度模式） ==========
-
-
-class UnifiedProcessRequest(BaseModel):
-    """统一处理请求 - 支持快速/深度两种模式。"""
-    mode: str = "fast"  # "fast" or "deep"
-    source_url: str = ""
-    source_platform: str = "zhihu"
-    target_platform: str = "xhs_video"
-    raw_content: dict = None  # 用于深度模式或手动输入
-    user_input: str = ""  # 深度模式的改写需求
-    generate_video: bool = False
-
-
-class UnifiedContinueRequest(BaseModel):
-    """继续执行请求 - 用于 interrupt 后恢复。"""
-    session_id: str
-    human_decision: str  # "accept" / "modify:xxx" / "finalize" / 用户微调消息
-
-
-@app.post("/api/unified/start")
-async def unified_start(request: UnifiedProcessRequest):
-    """启动统一 workflow - 快速模式或深度模式。
-
-    快速模式（mode="fast"）：
-    - 从 URL 抓取内容，自动改写，生成输出
-    - 无需用户干预，一次性完成
-
-    深度模式（mode="deep"）：
-    - 需要提供 raw_content 和 user_input
-    - 生成大纲后暂停，等待用户确认
-    - 返回 outline，需要调用 /api/unified/continue 继续
-
-    Returns:
-        快速模式：完整结果
-        深度模式：大纲和 session_id，需要继续
-    """
-    logger.info(f"[API/Unified] Start: mode={request.mode}, target={request.target_platform}")
-
-    # 创建初始状态
-    state = create_unified_state(
-        mode=request.mode,
-        topic=request.source_url,
-        target_platform=request.target_platform,
-        source_platform=request.source_platform,
-        raw_content=request.raw_content,
-        user_input=request.user_input,
-        generate_video=request.generate_video,
-    )
-    state["skip_publish"] = True  # 默认不实际发布
-
-    session_id = state["session_id"]
-
-    # 执行 workflow（延迟初始化）
-    try:
-        workflow = await get_unified_workflow()
-        result = await workflow.ainvoke(
-            state,
-            config={"configurable": {"thread_id": session_id}}
-        )
-        logger.info(f"[API/Unified] Workflow executed: stage={result.get('stage', 'completed')}")
-
-        # 根据模式返回不同结果
-        if request.mode == "fast":
-            return {
-                "success": True,
-                "session_id": session_id,
-                "script_path": result.get("script_path", ""),
-                "video_path": result.get("video_path", ""),
-                "final_script": result.get("final_script", ""),
-            }
-        else:
-            # 深度模式：在 human_review 前暂停
-            return {
-                "success": True,
-                "session_id": session_id,
-                "stage": result.get("stage", "waiting_outline"),
-                "outline": result.get("outline", ""),
-                "outline_version": result.get("outline_version", 0),
-                "need_continue": result.get("stage") == "waiting_outline",
-            }
-
-    except Exception as e:
-        logger.error(f"[API/Unified] Start failed: {e}")
-        return {"success": False, "error": str(e), "session_id": session_id}
-
-
-@app.post("/api/unified/continue")
-async def unified_continue(request: UnifiedContinueRequest):
-    """继续执行 workflow - 用于 interrupt 后恢复。
-
-    用于深度模式的大纲确认和微调阶段：
-    - 大纲确认：human_decision = "accept" / "modify:xxx" / "finalize"
-    - 微调阶段：human_decision = 用户修改请求 / "finalize"
-
-    Returns:
-        当前状态，可能需要继续或已完成
-    """
-    logger.info(f"[API/Unified] Continue: session={request.session_id}, decision={request.human_decision[:30]}...")
-
-    try:
-        # 使用 Command 来恢复执行，同时更新状态
-        # LangGraph resume 的正确用法：
-        # - 传入 None: 可以 resume，但不能传入新数据
-        # - 传入 dict: 会重新开始（从 START），不会 resume
-        # - 使用 Command: 可以 resume 并同时传入新数据
-        from langgraph.types import Command
-
-        workflow = await get_unified_workflow()
-        result = await workflow.ainvoke(
-            Command(update={"human_decision": request.human_decision}),
-            config={"configurable": {"thread_id": request.session_id}},
-        )
-
-        stage = result.get("stage", "")
-        logger.info(f"[API/Unified] Continue result: stage={stage}")
-
-        # 返回当前状态
-        return {
-            "success": True,
-            "session_id": request.session_id,
-            "stage": stage,
-            "outline": result.get("outline", ""),
-            "outline_version": result.get("outline_version", 0),
-            "current_draft": result.get("current_draft", ""),
-            "final_script": result.get("final_script", ""),
-            "script_path": result.get("script_path", ""),
-            "video_path": result.get("video_path", ""),
-            "need_continue": stage in ["waiting_outline", "tuning"],
-        }
-
-    except Exception as e:
-        logger.error(f"[API/Unified] Continue failed: {e}")
-        return {"success": False, "error": str(e), "session_id": request.session_id}
-
-
-@app.get("/api/unified/status/{session_id}")
-async def unified_status(session_id: str):
-    """获取统一 workflow 状态。"""
-    try:
-        # 从 checkpointer 加载状态（延迟初始化）
-        workflow = await get_unified_workflow()
-        result = await workflow.aget_state(
-            config={"configurable": {"thread_id": session_id}}
-        )
-
-        if not result:
-            return {"success": False, "error": "Session not found"}
-
-        state = result.get("channel_values", {})
-        return {
-            "success": True,
-            "session_id": session_id,
-            "mode": state.get("mode", "unknown"),
-            "stage": state.get("stage", ""),
-            "outline": state.get("outline", ""),
-            "current_draft": state.get("current_draft", ""),
-            "final_script": state.get("final_script", ""),
-        }
-
-    except Exception as e:
-        logger.error(f"[API/Unified] Status failed: {e}")
-        return {"success": False, "error": str(e)}
-
-
 @app.websocket("/ws/deep_mode/{session_id}")
 async def deep_mode_websocket(websocket: WebSocket, session_id: str):
     """深度生成实时对话通道 - 代理到 Gateway API WebSocket。"""
+    principal = await authenticate_websocket(websocket)
+    if principal is None:
+        return
+    from forge.async_jobs.repository import JobRepository
+
+    if not await JobRepository().owns_session(
+        session_id,
+        principal.tenant_id,
+        principal.subject,
+    ):
+        await websocket.close(code=4404, reason="会话不存在")
+        return
+    access_token = access_token_from_websocket(websocket)
     await websocket.accept()
     logger.info(f"[WebSocket] Client connected: {session_id}")
 
@@ -1575,7 +1456,10 @@ async def deep_mode_websocket(websocket: WebSocket, session_id: str):
     try:
         # 使用 websockets 库连接 Gateway
         import websockets
-        async with websockets.connect(gateway_ws_url) as gateway_ws:
+        async with websockets.connect(
+            gateway_ws_url,
+            additional_headers={"Authorization": f"Bearer {access_token}"},
+        ) as gateway_ws:
             logger.info(f"[WebSocket] Connected to Gateway: {session_id}")
 
             # 双向消息转发
@@ -1656,7 +1540,7 @@ def generate_evaluation_tip(result: dict) -> str:
 
 
 @app.get("/api/evaluation/{session_id}")
-async def api_get_evaluation(session_id: str):
+async def api_get_evaluation(session_id: str, http_request: Request):
     """获取评估结果（用户端简单分数）。
 
     返回字段说明：
@@ -1667,6 +1551,7 @@ async def api_get_evaluation(session_id: str):
     """
     if not is_valid_uuid(session_id):
         raise HTTPException(status_code=400, detail="无效的session_id格式")
+    await _require_owned_session(http_request, session_id)
     result = await get_evaluation_result(session_id)
     if result is None:
         return {"status": "pending"}
@@ -1685,8 +1570,23 @@ async def api_get_evaluation(session_id: str):
     }
 
 
+@app.get("/api/article-expression-evaluation/{session_id}")
+async def api_get_article_expression_evaluation(session_id: str, http_request: Request):
+    """获取最终文章的结构、文笔和自然度评分。"""
+    if not is_valid_uuid(session_id):
+        raise HTTPException(status_code=400, detail="无效的session_id格式")
+    await _require_owned_session(http_request, session_id)
+    result = await get_latest_article_expression(session_id)
+    if result is None:
+        return {"status": "pending"}
+    return result
+
+
 @app.get("/api/admin/evaluation/{session_id}/detail")
-async def api_get_evaluation_detail(session_id: str):
+async def api_get_evaluation_detail(
+    session_id: str,
+    _principal: Principal = Depends(require_admin),
+):
     """获取详细评估结果（后台分析）。"""
     if not is_valid_uuid(session_id):
         raise HTTPException(status_code=400, detail="无效的session_id格式")
@@ -1698,7 +1598,10 @@ async def api_get_evaluation_detail(session_id: str):
 
 
 @app.get("/api/admin/evaluation/stats")
-async def api_get_evaluation_stats(limit: int = 100):
+async def api_get_evaluation_stats(
+    limit: int = 100,
+    _principal: Principal = Depends(require_admin),
+):
     """获取评估统计数据。"""
     limit = min(max(limit, 1), 1000)  # 范围限制1-1000
     stats = await get_evaluation_stats(limit)

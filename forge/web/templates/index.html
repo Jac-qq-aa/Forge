@@ -171,36 +171,13 @@
             <div id="articles-list" class="articles-list"></div>
         </section>
 
-        <!-- Step 2.5: 选择改写模式 -->
-        <section id="mode-section" class="card" style="display: none;">
-            <div class="card-header">
-                <span class="step-badge">步骤 2.5</span>
-                <h2>选择改写模式</h2>
-            </div>
-            <p id="selected-article-title" class="hint" style="font-weight: bold;"></p>
-            <div style="display: flex; gap: 20px; margin-top: 20px;">
-                <div class="mode-card" onclick="selectMode('normal')" onmouseover="this.style.background='#fff3e0'" onmouseout="this.style.background=''" style="flex: 1; padding: 20px; border: 2px solid #ddd; border-radius: 12px; cursor: pointer; text-align: center; transition: all 0.2s;">
-                    <h3 style="margin-bottom: 10px;">⚡ 快速改写</h3>
-                    <p style="color: #666; font-size: 14px;">一键生成，适合快速产出</p>
-                    <p style="color: #888; font-size: 12px;">约 20-40 秒</p>
-                </div>
-                <div class="mode-card" onclick="selectMode('deep')" onmouseover="this.style.background='#c8e6c9'" onmouseout="this.style.background='#e8f5e9'" style="flex: 1; padding: 20px; border: 2px solid #4CAF50; border-radius: 12px; cursor: pointer; text-align: center; background: #e8f5e9; transition: all 0.2s;">
-                    <h3 style="margin-bottom: 10px;">🌟 深度生成</h3>
-                    <p style="color: #666; font-size: 14px;">多轮对话，精细定制</p>
-                    <p style="color: #888; font-size: 12px;">可修改大纲、微调内容</p>
-                </div>
-            </div>
-            <div style="margin-top: 20px;">
-                <button class="btn btn-secondary" onclick="backToArticles()">返回文章列表</button>
-            </div>
-        </section>
-
-        <!-- Step 2.6: 深度生成 - 画像表单 -->
+        <!-- Step 2.5: 填写生成要求 -->
         <section id="deep-profile-section" class="card" style="display: none;">
             <div class="card-header">
-                <span class="step-badge">步骤 2.6</span>
+                <span class="step-badge">步骤 2.5</span>
                 <h2>填写改写需求</h2>
             </div>
+            <p id="selected-article-title" class="hint" style="font-weight: bold;"></p>
             <p class="hint">请描述您的改写需求，AI 将自动提取关键信息</p>
 
             <div class="form-group">
@@ -211,15 +188,34 @@
 
             <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button id="deep-start-btn" class="btn btn-primary btn-large" onclick="startDeepMode()">
-                    ✨ 生成大纲
+                    🔎 研究并生成事实清单
                 </button>
             </div>
         </section>
 
-        <!-- Step 2.7: 深度生成 - 大纲确认 -->
-        <section id="deep-outline-section" class="card" style="display: none;">
+        <!-- Step 2.7: 深度生成 - 事实审核 -->
+        <section id="deep-facts-section" class="card" style="display: none;">
             <div class="card-header">
                 <span class="step-badge">步骤 2.7</span>
+                <h2>审核事实清单</h2>
+            </div>
+            <p id="deep-facts-status" class="hint" style="color: #4CAF50;">研究完成，请确认文章允许使用的事实</p>
+            <div id="deep-facts-summary" style="background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 15px;"></div>
+            <div id="deep-facts-list" style="display: grid; gap: 12px; margin-bottom: 20px;"></div>
+            <div class="form-group">
+                <label for="deep-facts-research-request">补充研究要求</label>
+                <textarea id="deep-facts-research-request" rows="2" placeholder="例如：进一步核实数据口径，补充项目成本和实施周期"></textarea>
+            </div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button id="deep-facts-accept-btn" class="btn btn-primary" onclick="submitFactReview()">✅ 提交审核并生成大纲</button>
+                <button id="deep-facts-research-btn" class="btn btn-secondary" onclick="requestMoreFactResearch()">🔎 补充研究</button>
+            </div>
+        </section>
+
+        <!-- Step 2.8: 深度生成 - 大纲确认 -->
+        <section id="deep-outline-section" class="card" style="display: none;">
+            <div class="card-header">
+                <span class="step-badge">步骤 2.8</span>
                 <h2>确认大纲</h2>
             </div>
             <p id="deep-outline-status" class="hint" style="color: #4CAF50;">大纲已生成，请确认或修改</p>
@@ -252,10 +248,10 @@
             </div>
         </section>
 
-        <!-- Step 2.8: 深度生成 - 全文预览 -->
+        <!-- Step 2.9: 深度生成 - 全文预览 -->
         <section id="deep-content-section" class="card" style="display: none;">
             <div class="card-header">
-                <span class="step-badge">步骤 2.8</span>
+                <span class="step-badge">步骤 2.9</span>
                 <h2>全文预览</h2>
             </div>
             <p id="deep-content-status" class="hint" style="color: #4CAF50;">全文已生成，可直接定稿或进入对话微调</p>
@@ -291,10 +287,10 @@
             </div>
         </section>
 
-        <!-- Step 2.9: 深度生成 - 微调对话 -->
+        <!-- Step 2.10: 深度生成 - 微调对话 -->
         <section id="deep-chat-section" class="card" style="display: none;">
             <div class="card-header">
-                <span class="step-badge">步骤 2.9</span>
+                <span class="step-badge">步骤 2.10</span>
                 <h2>微调对话</h2>
             </div>
             <p class="hint">全文已生成，您可以通过对话微调内容，也可直接编辑下方文章</p>
@@ -474,11 +470,8 @@
             <p id="answers-info" class="hint"></p>
             <div id="answers-list" class="answers-list"></div>
             <div class="answers-actions">
-                <button id="merge-btn" class="btn btn-primary" onclick="mergeSelectedAnswers()" disabled>
-                    ⚡ 合并改写（快速）
-                </button>
                 <button id="deep-merge-btn" class="btn btn-secondary" onclick="showDeepModeFromAnswers()" disabled style="background: #e8f5e9; border-color: #4CAF50;">
-                    🌟 深度生成
+                    使用所选回答生成
                 </button>
                 <button class="btn btn-secondary" onclick="backToArticles()">
                     返回文章列表
@@ -975,8 +968,11 @@
             try {
                 // 后端推荐接口读取服务器端订阅文件；先把浏览器 localStorage 中的博主同步过去。
                 await syncLocalBloggersToServer();
-                const response = await fetch('/api/recommend_articles?max_per_blogger=5');
-                const data = await response.json();
+                const data = await submitAsyncJob(
+                    '/api/recommend_articles?max_per_blogger=5',
+                    null,
+                    'POST'
+                );
 
                 loadingDiv.style.display = 'none';
 
@@ -1046,12 +1042,10 @@
                     btn.disabled = true;
                     btn.textContent = '加载中...';
                     try {
-                        const response = await fetch('/api/article_detail', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({source_url: url, source_platform: 'zhihu'})
+                        const data = await submitAsyncJob('/api/article_detail', {
+                            source_url: url,
+                            source_platform: 'zhihu',
                         });
-                        const data = await response.json();
                         if (data.success && data.article) {
                             article.text = data.article.text || currentText;
                             article.likes = data.article.likes ?? article.likes;
@@ -1234,12 +1228,14 @@
 
             // 隐藏深度生成模式 section
             const deepProfileSection = document.getElementById('deep-profile-section');
+            const deepFactsSection = document.getElementById('deep-facts-section');
             const deepOutlineSection = document.getElementById('deep-outline-section');
             const deepContentSection = document.getElementById('deep-content-section');
             const deepChatSection = document.getElementById('deep-chat-section');
             const deepFinalizedSection = document.getElementById('deep-finalized-section');
 
             if (deepProfileSection) deepProfileSection.style.display = 'none';
+            if (deepFactsSection) deepFactsSection.style.display = 'none';
             if (deepOutlineSection) deepOutlineSection.style.display = 'none';
             if (deepContentSection) deepContentSection.style.display = 'none';
             if (deepChatSection) deepChatSection.style.display = 'none';
@@ -1284,18 +1280,12 @@
             setButtonLoading(searchBtn, true);
 
             try {
-                const response = await fetch('/api/search', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const data = await submitAsyncJob('/api/search', {
                         source: source,
                         source_platform: sourcePlatform,
                         max_results: maxResults,
                         search_mode: searchMode,
-                    }),
                 });
-
-                const data = await response.json();
 
                 if (data.success) {
                     displayArticles(data.articles);
@@ -1310,10 +1300,9 @@
             }
         }
 
-        async function processManualInput() {
+        function processManualInput() {
             const title = document.getElementById('manual-title').value.trim();
             const content = document.getElementById('manual-content').value.trim();
-            const targetPlatform = document.getElementById('target-platform').value;
 
             if (!title) {
                 alert('请输入文章标题');
@@ -1328,48 +1317,16 @@
                 return;
             }
 
-            setButtonLoading(searchBtn, true);
-
-            document.getElementById('processing-title').textContent = `正在处理: ${title}`;
-            showSection(processingSection);
-
-            let progress = 0;
-            const progressFill = document.getElementById('progress-fill');
-            const progressInterval = setInterval(() => {
-                progress = Math.min(progress + Math.random() * 10, 90);
-                progressFill.style.width = progress + '%';
-            }, 500);
-
-            try {
-                const response = await fetch('/api/process_manual', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        title: title,
-                        text: content,
-                        source_platform: 'manual',
-                        target_platform: targetPlatform,
-                        generate_video: false,
-                    }),
-                });
-
-                const data = await response.json();
-
-                clearInterval(progressInterval);
-                progressFill.style.width = '100%';
-
-                if (data.success) {
-                    displayResult(data);
-                    setTimeout(() => showSection(resultSection), 500);
-                } else {
-                    showError(data.error || '处理失败');
-                }
-            } catch (error) {
-                clearInterval(progressInterval);
-                showError('处理请求失败: ' + error.message);
-            } finally {
-                setButtonLoading(searchBtn, false);
-            }
+            selectedArticle = {
+                title: title,
+                text: content,
+                summary: content,
+                url: 'manual:' + Date.now(),
+                source_url: '',
+            };
+            window.deepModeFromAnswers = false;
+            window.selectedAnswerIndexes = null;
+            showModeSelection();
         }
 
         function toggleSearchMode() {
@@ -1403,8 +1360,8 @@
                 bloggerGroup.style.display = 'none';
                 maxResultsGroup.style.display = 'none';
                 manualInputGroup.style.display = 'block';
-                searchBtn.querySelector('.btn-text').textContent = '✨ 开始改写';
-                searchHint.textContent = '正在调用 AI 模型改写内容，预计需要 20-40 秒...';
+                searchBtn.querySelector('.btn-text').textContent = '继续填写生成要求';
+                searchHint.textContent = '';
             } else if (platform === 'wechat') {
                 // 微信模式
                 searchModeGroup.style.display = 'block';
@@ -1464,71 +1421,21 @@
             if (sourcePlatform === 'zhihu' && selectedArticle.type === '知乎问答') {
                 await getAnswers(selectedArticle.source_url);
             } else {
-                // 显示模式选择界面
                 showModeSelection();
             }
         }
 
         function showModeSelection() {
-            // 显示选中的文章标题
             document.getElementById('selected-article-title').textContent =
                 '已选择：' + (selectedArticle.title || '未命名文章');
-            showSection(document.getElementById('mode-section'));
-        }
-
-        function selectMode(mode) {
-            console.log('[ModeSelection] Selected mode:', mode);
-            console.log('[ModeSelection] selectedArticle:', selectedArticle);
-
-            // 设置当前模式
-            currentMode = mode;
-
-            if (mode === 'normal') {
-                // 普通改写 - 清理深度生成状态并隐藏相关内容
-                // 清理深度生成会话
-                deepSessionId = null;
-                window.deepModeFromAnswers = false;
-                window.selectedAnswerIndexes = null;
-
-                // 隐藏所有深度生成相关 section
-                document.getElementById('deep-profile-section').style.display = 'none';
-                document.getElementById('deep-outline-section').style.display = 'none';
-                document.getElementById('deep-content-section').style.display = 'none';
-                document.getElementById('deep-chat-section').style.display = 'none';
-                document.getElementById('deep-finalized-section').style.display = 'none';
-
-                // 重置深度生成界面状态
-                document.getElementById('deep-user-input').value = '';
-                document.getElementById('deep-outline-content').value = '';
-                document.getElementById('deep-content-preview').value = '';
-                document.getElementById('deep-chat-history').innerHTML = `
-                    <div class="chat-message agent-message" style="padding: 10px; margin-bottom: 10px; background: #e8f5e9; border-radius: 8px;">
-                        <p>全文已生成完成！您可以提出修改意见，比如：</p>
-                        <ul style="margin-left: 20px; color: #666;">
-                            <li>"把第二段改得更通俗一点"</li>
-                            <li>"整体语气太严肃了，改轻松点"</li>
-                            <li>"查一下'360度评估'的定义"</li>
-                        </ul>
-                    </div>
-                `;
-
-                // 检查文章是否已选择
-                if (!selectedArticle) {
-                    showNotification('请先选择文章', 'error');
-                    return;
-                }
-                processArticle();
-            } else {
-                // 深度生成 - 隐藏快速生成相关内容
-                document.getElementById('result-section').style.display = 'none';
-                document.getElementById('answers-section').style.display = 'none';
-                document.getElementById('processing-section').style.display = 'none';
-                showSection(document.getElementById('deep-profile-section'));
-            }
+            document.getElementById('result-section').style.display = 'none';
+            document.getElementById('answers-section').style.display = 'none';
+            document.getElementById('processing-section').style.display = 'none';
+            showSection(document.getElementById('deep-profile-section'));
         }
 
         function backToModeSelection() {
-            showSection(document.getElementById('mode-section'));
+            showModeSelection();
         }
 
         function backToArticles() {
@@ -1574,8 +1481,6 @@
             "longteng": "大气男声（龙腾）- 需付费",
             "longjielidou": "活泼童声（龙杰力豆）- 需付费",
         };
-        let currentMode = 'normal';  // 当前模式：'normal' 快速改写 / 'deep' 深度生成
-
         // ========== 锁定/解锁辅助函数 ==========
 
         function lockDeepProfileInput(lock) {
@@ -1650,6 +1555,63 @@
             loading.style.display = 'none';
         }
 
+        async function submitAsyncJob(url, payload = null, method = 'POST') {
+            const options = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Idempotency-Key': crypto.randomUUID(),
+                },
+            };
+            if (payload !== null) {
+                options.body = JSON.stringify(payload);
+            }
+            const response = await fetch(url, options);
+            let data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || data.error || '任务提交失败');
+            }
+            if (!data.job_id) {
+                return data;
+            }
+
+            return await waitForJobEvents(data.job_id);
+        }
+
+        function waitForJobEvents(jobId) {
+            return new Promise((resolve, reject) => {
+                const events = new EventSource(`/api/jobs/${jobId}/events`, {
+                    withCredentials: true,
+                });
+                const timeout = setTimeout(() => {
+                    events.close();
+                    reject(new Error('任务执行超时，请稍后在历史记录中查看'));
+                }, 30 * 60 * 1000);
+
+                events.addEventListener('job', event => {
+                    const job = JSON.parse(event.data);
+                    if (job.status === 'succeeded') {
+                        clearTimeout(timeout);
+                        events.close();
+                        resolve(job.result);
+                    } else if (job.status === 'failed' || job.status === 'cancelled') {
+                        clearTimeout(timeout);
+                        events.close();
+                        reject(new Error(job.error || `任务${job.status}`));
+                    }
+                });
+
+                events.addEventListener('error', event => {
+                    if (event.data) {
+                        clearTimeout(timeout);
+                        events.close();
+                        const error = JSON.parse(event.data);
+                        reject(new Error(error.detail || '任务状态订阅失败'));
+                    }
+                });
+            });
+        }
+
         async function startDeepMode() {
             const userInput = document.getElementById('deep-user-input').value.trim();
             if (!userInput) {
@@ -1670,33 +1632,30 @@
                 sourceArticle = {
                     title: selectedArticle.title + '（合并回答）',
                     text: mergedText,
+                    url: selectedArticle.source_url || selectedArticle.url || '',
                 };
-                articleId = selectedArticle.url || selectedArticle.title + '_merged';
+                articleId = selectedArticle.source_url || selectedArticle.url || selectedArticle.title + '_merged';
             } else {
-                // 从普通文章模式
+                // 搜索结果只包含摘要时，Gateway 会根据 URL 抓取全文。
                 sourceArticle = {
                     title: selectedArticle.title,
-                    text: selectedArticle.text || selectedArticle.summary || '',
+                    text: selectedArticle.text || '',
+                    url: selectedArticle.source_url || selectedArticle.url || '',
                 };
-                articleId = selectedArticle.url || selectedArticle.title;
+                articleId = selectedArticle.source_url || selectedArticle.url || selectedArticle.title;
             }
 
             // 锁定输入，显示加载提示
             lockDeepProfileInput(true);
-            showDeepLoading('outline', '正在生成大纲...', 'AI 正在分析文章和用户需求，生成结构化大纲');
+            showDeepLoading('outline', '正在研究事实...', 'AI 正在收集证据并建立可审核的事实清单');
 
             try {
-                const response = await fetch('/api/deep_mode/create_session', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const data = await submitAsyncJob('/api/deep_mode/create_session', {
                         article_id: articleId,
                         source_article: sourceArticle,
                         user_input: userInput,
-                    }),
+                        target_platform: targetPlatform,
                 });
-
-                const data = await response.json();
 
                 if (data.error) {
                     unlockDeepProfileInput();
@@ -1707,24 +1666,188 @@
 
                 deepSessionId = data.session_id;
 
-                // 显示大纲确认界面
-                document.getElementById('deep-outline-content').value = data.outline;
-                document.getElementById('deep-outline-version').textContent = data.outline_version;
-                document.getElementById('deep-outline-status').textContent = '大纲已生成，请确认或修改';
-                document.getElementById('deep-outline-status').style.color = '#4CAF50';
+                renderFactReview(data.research_result || {});
 
                 unlockDeepProfileInput();
                 hideDeepLoading('outline');
                 // 隐藏填写改写需求卡片
                 document.getElementById('deep-profile-section').style.display = 'none';
-                showSection(document.getElementById('deep-outline-section'));
-                showNotification('大纲已生成！', 'success');
+                showSection(document.getElementById('deep-facts-section'));
+                showNotification('事实清单已生成，请审核', 'success');
 
             } catch (error) {
                 unlockDeepProfileInput();
                 hideDeepLoading('outline');
                 showNotification('请求失败：' + error.message, 'error');
             }
+        }
+
+        let deepResearchResult = null;
+
+        function renderFactReview(researchResult) {
+            deepResearchResult = researchResult || {};
+            const facts = deepResearchResult.facts || [];
+            const evidenceById = Object.fromEntries(
+                (deepResearchResult.evidence || []).map(item => [item.evidence_id, item])
+            );
+            const summary = document.getElementById('deep-facts-summary');
+            summary.textContent = `研究状态：${deepResearchResult.status || 'unknown'}；覆盖率：${Math.round((deepResearchResult.coverage || 0) * 100)}%；事实数：${facts.length}`;
+            const list = document.getElementById('deep-facts-list');
+            list.innerHTML = '';
+
+            facts.forEach(fact => {
+                const card = document.createElement('div');
+                card.className = 'deep-fact-card';
+                card.dataset.factId = fact.fact_id;
+                card.style.cssText = 'border:1px solid #ddd;border-radius:8px;padding:14px;background:#fff;';
+
+                const title = document.createElement('div');
+                title.style.cssText = 'display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;';
+                const claim = document.createElement('strong');
+                claim.textContent = `${fact.fact_id} · ${fact.claim}`;
+                const badge = document.createElement('span');
+                badge.textContent = `${fact.status} · ${Math.round((fact.confidence || 0) * 100)}%`;
+                badge.style.color = fact.status === 'verified' ? '#2e7d32' : (fact.status === 'unsupported' ? '#c62828' : '#ef6c00');
+                title.append(claim, badge);
+                card.appendChild(title);
+
+                const controls = document.createElement('div');
+                controls.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;';
+                const decision = document.createElement('select');
+                decision.className = 'deep-fact-decision';
+                [
+                    ['accepted', '使用'],
+                    ['excluded', '排除'],
+                    ['challenged', '提出异议'],
+                    ['needs_more_research', '需要补充研究'],
+                ].forEach(([value, label]) => {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = label;
+                    if (value === 'accepted' && fact.status === 'unsupported') option.disabled = true;
+                    decision.appendChild(option);
+                });
+                const currentDecision = fact.review && fact.review.decision;
+                decision.value = currentDecision && currentDecision !== 'pending'
+                    ? currentDecision
+                    : (fact.status === 'unsupported' ? 'excluded' : 'accepted');
+
+                const priority = document.createElement('select');
+                priority.className = 'deep-fact-priority';
+                [['low', '低优先级'], ['normal', '普通优先级'], ['high', '高优先级']].forEach(([value, label]) => {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = label;
+                    priority.appendChild(option);
+                });
+                priority.value = (fact.review && fact.review.priority) || 'normal';
+                controls.append(decision, priority);
+                card.appendChild(controls);
+
+                const comment = document.createElement('input');
+                comment.className = 'deep-fact-comment';
+                comment.type = 'text';
+                comment.placeholder = '审核意见、质疑点或补充研究要求';
+                comment.value = (fact.review && fact.review.comment) || '';
+                comment.style.cssText = 'width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin-bottom:8px;';
+                card.appendChild(comment);
+
+                const details = document.createElement('details');
+                const detailsTitle = document.createElement('summary');
+                detailsTitle.textContent = `查看证据与来源（${(fact.sources || []).length}）`;
+                details.appendChild(detailsTitle);
+                (fact.sources || []).forEach(source => {
+                    const sourceRow = document.createElement('div');
+                    sourceRow.style.cssText = 'margin:6px 0;padding-left:12px;font-size:13px;';
+                    const link = document.createElement('a');
+                    link.textContent = `${source.title || source.source} · ${source.evidence_id}`;
+                    link.href = source.url;
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                    sourceRow.appendChild(link);
+                    const evidence = evidenceById[source.evidence_id];
+                    if (evidence && evidence.excerpt) {
+                        const excerpt = document.createElement('p');
+                        excerpt.textContent = evidence.excerpt.slice(0, 600);
+                        excerpt.style.cssText = 'margin:5px 0;color:#555;line-height:1.5;';
+                        sourceRow.appendChild(excerpt);
+                    }
+                    details.appendChild(sourceRow);
+                });
+                card.appendChild(details);
+                list.appendChild(card);
+            });
+        }
+
+        function collectFactReviews() {
+            return Array.from(document.querySelectorAll('.deep-fact-card')).map(card => ({
+                fact_id: card.dataset.factId,
+                action: card.querySelector('.deep-fact-decision').value,
+                comment: card.querySelector('.deep-fact-comment').value.trim(),
+                priority: card.querySelector('.deep-fact-priority').value,
+            }));
+        }
+
+        async function sendFactAction(action, researchRequest = '') {
+            const acceptButton = document.getElementById('deep-facts-accept-btn');
+            const researchButton = document.getElementById('deep-facts-research-btn');
+            acceptButton.disabled = true;
+            researchButton.disabled = true;
+            document.getElementById('deep-facts-status').textContent =
+                action === 'research_more' ? '正在补充研究...' : '正在应用审核结果并生成大纲...';
+            try {
+                const data = await submitAsyncJob('/api/deep_mode/fact_action', {
+                        session_id: deepSessionId,
+                        action,
+                        reviews: collectFactReviews(),
+                        research_request: researchRequest,
+                });
+                if (data.error) {
+                    throw new Error(data.error || data.detail || '事实审核失败');
+                }
+                if (data.stage === 'waiting_outline') {
+                    document.getElementById('deep-outline-content').value = data.outline || '';
+                    document.getElementById('deep-outline-version').textContent = data.outline_version || 1;
+                    document.getElementById('deep-outline-status').textContent = '大纲已基于确认事实生成，请确认或修改';
+                    document.getElementById('deep-facts-section').style.display = 'none';
+                    showSection(document.getElementById('deep-outline-section'));
+                    showNotification('事实审核完成，大纲已生成', 'success');
+                } else {
+                    renderFactReview(data.research_result || {});
+                    document.getElementById('deep-facts-status').textContent = '事实清单已更新，请继续审核';
+                    showNotification('补充研究完成', 'success');
+                }
+            } catch (error) {
+                document.getElementById('deep-facts-status').textContent = '事实审核失败，请重试';
+                showNotification(error.message, 'error');
+            } finally {
+                acceptButton.disabled = false;
+                researchButton.disabled = false;
+            }
+        }
+
+        async function submitFactReview() {
+            const reviews = collectFactReviews();
+            const unresolved = reviews.filter(item =>
+                item.action === 'challenged' || item.action === 'needs_more_research'
+            );
+            if (unresolved.length) {
+                const request = unresolved
+                    .map(item => `${item.fact_id}：${item.comment || '请重新核验该事实'}`)
+                    .join('；');
+                await sendFactAction('research_more', request);
+                return;
+            }
+            await sendFactAction('accept');
+        }
+
+        async function requestMoreFactResearch() {
+            const request = document.getElementById('deep-facts-research-request').value.trim();
+            if (!request) {
+                showNotification('请填写补充研究要求', 'error');
+                return;
+            }
+            await sendFactAction('research_more', request);
         }
 
         function showModifyInput() {
@@ -1747,17 +1870,11 @@
             document.getElementById('deep-outline-status').style.color = '#FF9800';
 
             try {
-                const response = await fetch('/api/deep_mode/outline_action', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const data = await submitAsyncJob('/api/deep_mode/outline_action', {
                         session_id: deepSessionId,
                         action: 'modify',
                         modification: modification,
-                    }),
                 });
-
-                const data = await response.json();
 
                 unlockDeepOutlineInput();
                 hideDeepLoading('outline');
@@ -1800,16 +1917,10 @@
             document.getElementById('deep-outline-status').style.color = '#FF9800';
 
             try {
-                const response = await fetch('/api/deep_mode/outline_action', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const data = await submitAsyncJob('/api/deep_mode/outline_action', {
                         session_id: deepSessionId,
                         action: 'accept',
-                    }),
                 });
-
-                const data = await response.json();
 
                 unlockDeepOutlineInput();
                 hideDeepLoading('content');
@@ -1865,16 +1976,10 @@
 
             try {
                 console.log('[Finalize] Sending request...');
-                const response = await fetch('/api/deep_mode/finalize', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const data = await submitAsyncJob('/api/deep_mode/finalize', {
                         session_id: deepSessionId,
                         content: contentToFinalize,
-                    }),
                 });
-
-                const data = await response.json();
                 console.log('[Finalize] Response:', data);
 
                 // 隐藏加载状态
@@ -2631,16 +2736,10 @@
             showSection(answersSection);
 
             try {
-                const response = await fetch('/api/get_answers', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const data = await submitAsyncJob('/api/get_answers', {
                         question_url: questionUrl,
                         max_answers: 10,
-                    }),
                 });
-
-                const data = await response.json();
 
                 if (data.success && data.answers.length > 0) {
                     window.currentQuestionUrl = questionUrl;
@@ -2705,7 +2804,6 @@
         function updateMergeButton() {
             const checkboxes = document.querySelectorAll('.answer-checkbox input:checked');
             const hasChecked = checkboxes.length > 0;
-            document.getElementById('merge-btn').disabled = !hasChecked;
             document.getElementById('deep-merge-btn').disabled = !hasChecked;
         }
 
@@ -2727,132 +2825,7 @@
             const titles = selectedIndexes.map(i => window.answersData[i]?.excerpt?.slice(0, 30) || '回答').join(', ');
             document.getElementById('selected-article-title').textContent = '已选择 ' + selectedIndexes.length + ' 个回答';
 
-            showSection(document.getElementById('mode-section'));
-        }
-
-        async function processArticle() {
-            if (!selectedArticle) {
-                alert('请先选择文章');
-                return;
-            }
-
-            const sourcePlatform = document.getElementById('source-platform').value;
-            const targetPlatform = document.getElementById('target-platform').value;
-
-            document.getElementById('processing-title').textContent = `正在处理: ${selectedArticle.title}`;
-            showSection(processingSection);
-
-            let progress = 0;
-            const progressFill = document.getElementById('progress-fill');
-            const progressInterval = setInterval(() => {
-                progress = Math.min(progress + Math.random() * 10, 90);
-                progressFill.style.width = progress + '%';
-            }, 500);
-
-            try {
-                const response = await fetch('/api/process', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        source_url: selectedArticle.source_url,
-                        source_platform: sourcePlatform,
-                        target_platform: targetPlatform,
-                        generate_video: false,
-                    }),
-                });
-
-                const data = await response.json();
-
-                clearInterval(progressInterval);
-                progressFill.style.width = '100%';
-
-                // 检查当前模式，如果用户已切换到深度生成，不显示快速改写结果
-                if (currentMode !== 'normal') {
-                    console.log('[ProcessArticle] User switched to deep mode, ignoring result');
-                    return;
-                }
-
-                if (data.success) {
-                    displayResult(data);
-                    setTimeout(() => showSection(resultSection), 500);
-                } else {
-                    showError(data.error || '处理失败');
-                }
-            } catch (error) {
-                clearInterval(progressInterval);
-                // 检查当前模式
-                if (currentMode !== 'normal') {
-                    console.log('[ProcessArticle] User switched to deep mode, ignoring error');
-                    return;
-                }
-                showError('处理请求失败: ' + error.message);
-            }
-        }
-
-        async function mergeSelectedAnswers() {
-            const checkboxes = document.querySelectorAll('.answer-checkbox input:checked');
-            const selectedIndexes = Array.from(checkboxes).map(cb => parseInt(cb.id.replace('answer-', '')));
-
-            if (selectedIndexes.length === 0) {
-                alert('请选择至少一个回答');
-                return;
-            }
-
-            const answerUrls = selectedIndexes.map(i => window.answersData[i].source_url);
-            const targetPlatform = document.getElementById('target-platform').value;
-
-            // 设置当前模式为快速改写（合并改写也算快速改写）
-            currentMode = 'normal';
-
-            document.getElementById('processing-title').textContent = `正在合并 ${selectedIndexes.length} 个回答并洗稿...`;
-            showSection(processingSection);
-
-            let progress = 0;
-            const progressFill = document.getElementById('progress-fill');
-            const progressInterval = setInterval(() => {
-                progress = Math.min(progress + Math.random() * 10, 90);
-                progressFill.style.width = progress + '%';
-            }, 500);
-
-            try {
-                const response = await fetch('/api/process_multi', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        question_url: window.currentQuestionUrl,
-                        answer_urls: answerUrls,
-                        source_platform: 'zhihu',
-                        target_platform: targetPlatform,
-                        generate_video: false,
-                    }),
-                });
-
-                const data = await response.json();
-
-                clearInterval(progressInterval);
-                progressFill.style.width = '100%';
-
-                // 检查当前模式
-                if (currentMode !== 'normal') {
-                    console.log('[MergeSelectedAnswers] User switched to deep mode, ignoring result');
-                    return;
-                }
-
-                if (data.success) {
-                    displayResult(data);
-                    setTimeout(() => showSection(resultSection), 500);
-                } else {
-                    showError(data.error || '处理失败');
-                }
-            } catch (error) {
-                clearInterval(progressInterval);
-                // 检查当前模式
-                if (currentMode !== 'normal') {
-                    console.log('[MergeSelectedAnswers] User switched to deep mode, ignoring error');
-                    return;
-                }
-                showError('处理请求失败: ' + error.message);
-            }
+            showModeSelection();
         }
 
         function displayResult(data) {
@@ -3548,6 +3521,7 @@
                         const stageText = {
                             'completed': '已完成',
                             'tuning': '改写中',
+                            'waiting_facts': '事实待审核',
                             'waiting_outline': '大纲待确认',
                             'cancelled': '已取消',
                         }[session.stage] || session.stage;
@@ -3730,6 +3704,7 @@
         function getStageText(stage) {
             const stageMap = {
                 'planning': '规划中',
+                'waiting_facts': '待审核事实',
                 'waiting_outline': '待确认大纲',
                 'executing': '生成中',
                 'tuning': '微调中',
@@ -3995,19 +3970,22 @@
 
             // 隐藏其他section
             document.getElementById('articles-section').style.display = 'none';
-            document.getElementById('mode-selection-section').style.display = 'none';
             document.getElementById('processing-section').style.display = 'none';
             document.getElementById('result-section').style.display = 'none';
 
             // 隐藏所有深度生成 section
             document.getElementById('deep-profile-section').style.display = 'none';
+            document.getElementById('deep-facts-section').style.display = 'none';
             document.getElementById('deep-outline-section').style.display = 'none';
             document.getElementById('deep-content-section').style.display = 'none';
             document.getElementById('deep-chat-section').style.display = 'none';
             document.getElementById('deep-finalized-section').style.display = 'none';
 
             // 根据stage显示对应界面
-            if (session.stage === 'waiting_outline') {
+            if (session.stage === 'waiting_facts') {
+                renderFactReview(session.research_result || {});
+                document.getElementById('deep-facts-section').style.display = 'block';
+            } else if (session.stage === 'waiting_outline') {
                 // 显示大纲确认界面
                 document.getElementById('deep-outline-section').style.display = 'block';
                 document.getElementById('deep-outline-content').value = session.outline || '无大纲';
