@@ -1,0 +1,101 @@
+{
+  "uid": "forge-workflow",
+  "title": "Forge 工作流与复盘",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "节点耗时 P95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(forge_operation_seconds_bucket[5m])))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "节点状态",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation,status) (increase(forge_operations_total[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "系统自动决定",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(forge_events_total{event=\"system.decision\"}[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "日志写入失败",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(forge_events_total{event=\"telemetry.persistence_failed\"}[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    }
+  ]
+}

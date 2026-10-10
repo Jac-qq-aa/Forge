@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+__pycache__
+.pytest_cache
+.langgraph_api
+volumes
+web/node_modules
+web/dist
+tmp
+output
+backups

@@ -1,0 +1,53 @@
+groups:
+  - name: forge
+    rules:
+      - alert: ForgeServiceDown
+        expr: up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: '服务指标端点不可达：{{ $labels.instance }}'}
+      - alert: ForgeQueueDelayed
+        expr: forge_oldest_job_seconds{status=~"pending|queued"} > 300
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: '任务排队超过 5 分钟'}
+      - alert: ForgeSubmissionUnknown
+        expr: forge_jobs{status="submission_unknown",kind="start"} > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: '远程提交结果不明，已停止重复提交，请核对 run'}
+      - alert: ForgeRunStuck
+        expr: forge_oldest_job_seconds{status=~"submitted|running|dispatching"} > 1800
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: '运行或提交持续超过 30 分钟'}
+      - alert: ForgeModelThrottled
+        expr: sum(increase(forge_model_retries_total{code="429"}[5m])) > 3
+        labels: {severity: warning}
+        annotations: {summary: '模型近 5 分钟多次限流，请调低应用预算'}
+      - alert: ForgeTelemetryLoss
+        expr: sum(increase(forge_events_total{event="telemetry.persistence_failed"}[5m])) > 0
+        labels: {severity: warning}
+        annotations: {summary: '复盘日志持久化失败，检查 PostgreSQL'}
+      - alert: ForgeOutboxFailed
+        expr: forge_outbox{status="failed"} > 0
+        labels: {severity: critical}
+        annotations: {summary: 'Outbox 消息重试耗尽'}
+      - alert: ForgeAuditNeedsAttention
+        expr: forge_audit_checks{status="attention"} > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: '近 24 小时存在需处理的持久化完整性检查，请查看任务复盘'}
+      - alert: ForgeBackgroundJobFailed
+        expr: forge_jobs{status="failed",kind=~"index_document|audit_job"} > 0
+        labels: {severity: warning}
+        annotations: {summary: '后台任务失败：{{ $labels.kind }}'}
+      - alert: RocketMqDeadLetter
+        expr: sum(increase(rocketmq_send_to_dlq_messages_total[15m])) > 0
+        labels: {severity: critical}
+        annotations: {summary: 'RocketMQ 存在死信，请核对消费失败日志'}
+      - alert: RocketMqConsumerLag
+        expr: rocketmq_consumer_lag_latency > 300000
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'RocketMQ 消费延迟超过 5 分钟'}

@@ -1,0 +1,2 @@
+-r requirements-runtime.txt
+langgraph-cli[inmem]>=0.4,<1

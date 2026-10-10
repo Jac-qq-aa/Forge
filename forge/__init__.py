@@ -1,3 +1,3 @@
-"""Forge - Multi-agent workflow for Xiaohongshu content automation."""
+"""Forge 对话式事实写作系统。"""
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

@@ -1,0 +1,101 @@
+{
+  "uid": "forge-models",
+  "title": "Forge 模型与工具",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "模型 token 消耗",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (role, direction) (rate(forge_model_tokens_total[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "模型重试",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (role, code) (increase(forge_model_retries_total[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "预算等待 P95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le,role) (rate(forge_model_budget_wait_seconds_bucket[5m])))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "工具失败",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (increase(forge_operations_total{status=\"failed\"}[5m]))",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    }
+  ]
+}

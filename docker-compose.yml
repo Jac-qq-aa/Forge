@@ -1,65 +1,246 @@
-version: '3.5'
+x-forge-environment: &forge-environment
+  DATABASE_URL: postgresql://forge_app:forge_app@postgres:5432/forge
+  MIGRATION_DATABASE_URL: postgresql://forge_owner:forge_owner@postgres:5432/forge
+  LANGGRAPH_SERVER_URL: http://langgraph:8123
+  LANGGRAPH_ASSISTANT_ID: forge
+  REDIS_URL: redis://redis:6379/0
+  LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+  LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-forge}
+  LANGSMITH_HIDE_INPUTS: "true"
+  LANGSMITH_HIDE_OUTPUTS: "true"
+  GRAPH_MAX_CONCURRENCY: ${GRAPH_MAX_CONCURRENCY:-3}
+  INDEX_MAX_CONCURRENCY: ${INDEX_MAX_CONCURRENCY:-1}
+  AUDIT_MAX_CONCURRENCY: ${AUDIT_MAX_CONCURRENCY:-1}
+  ROCKETMQ_BRIDGE_URL: http://rocketmq-bridge:8090
+  ROCKETMQ_BRIDGE_TOKEN: ${ROCKETMQ_BRIDGE_TOKEN:-development-rocketmq-bridge-token}
+  ROCKETMQ_CONSUMER_SECRET: ${ROCKETMQ_CONSUMER_SECRET:-development-rocketmq-consumer-secret}
+
+x-forge-service: &forge-service
+  build:
+    context: .
+  env_file:
+    - path: .env
+      required: false
+  environment: *forge-environment
+  restart: unless-stopped
+  logging: &forge-logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
 
 services:
-  etcd:
-    container_name: milvus-etcd
-    image: quay.io/coreos/etcd:v3.5.5
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
-  minio:
-    container_name: milvus-minio
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      - forge-redis:/data
     ports:
-      - "9001:9001"
-      - "9000:9000"
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
 
-  standalone:
-    container_name: milvus-standalone
-    image: milvusdb/milvus:v2.4.0
-    command: ["milvus", "run", "standalone"]
-    security_opt:
-    - seccomp:unconfined
+  postgres:
+    image: pgvector/pgvector:pg17
     environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 30s
-      start_period: 90s
-      timeout: 20s
-      retries: 3
+      POSTGRES_DB: forge
+      POSTGRES_USER: forge_owner
+      POSTGRES_PASSWORD: forge_owner
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - forge-postgres:/var/lib/postgresql/data
+      - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge_owner -d forge"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *forge-service
+    restart: "no"
+    command: ["python", "-m", "forge.cli", "migrate"]
     depends_on:
-      - "etcd"
-      - "minio"
+      postgres:
+        condition: service_healthy
 
-networks:
-  default:
-    name: milvus
+  namesrv:
+    image: apache/rocketmq:5.3.2
+    user: "0:0"
+    command: ["sh", "mqnamesrv"]
+    ports:
+      - "127.0.0.1:9876:9876"
+    volumes:
+      - rocketmq-namesrv-logs:/home/rocketmq/logs
+    restart: unless-stopped
+
+  broker:
+    image: apache/rocketmq:5.3.2
+    user: "0:0"
+    command:
+      - sh
+      - mqbroker
+      - -c
+      - /home/rocketmq/rocketmq-5.3.2/conf/broker.conf
+    environment:
+      NAMESRV_ADDR: namesrv:9876
+    depends_on:
+      - namesrv
+    ports:
+      - "127.0.0.1:10909:10909"
+      - "127.0.0.1:10911:10911"
+    volumes:
+      - ./deploy/rocketmq/broker.conf:/home/rocketmq/rocketmq-5.3.2/conf/broker.conf:ro
+      - rocketmq-broker-logs:/home/rocketmq/logs
+      - rocketmq-broker-store:/home/rocketmq/store
+    restart: unless-stopped
+
+  rocketmq-bridge:
+    logging: *forge-logging
+    build:
+      context: ./deploy/rocketmq-bridge
+    environment:
+      NAMESRV_ADDR: namesrv:9876
+      BRIDGE_TOKEN: ${ROCKETMQ_BRIDGE_TOKEN:-development-rocketmq-bridge-token}
+      CONSUMER_ROUTES_FILE: /config/routes.json
+      WORKFLOW_CONSUMER_SECRET: ${ROCKETMQ_CONSUMER_SECRET:-development-rocketmq-consumer-secret}
+      INDEX_CONSUMER_SECRET: ${ROCKETMQ_INDEX_CONSUMER_SECRET:-development-index-consumer-secret}
+      AUDIT_CONSUMER_SECRET: ${ROCKETMQ_AUDIT_CONSUMER_SECRET:-development-audit-consumer-secret}
+    volumes:
+      - ./deploy/rocketmq-bridge/routes.json:/config/routes.json:ro
+    depends_on:
+      - broker
+    ports:
+      - "127.0.0.1:8090:8090"
+    restart: on-failure
+
+  langgraph:
+    <<: *forge-service
+    build:
+      context: .
+      dockerfile: Dockerfile.langgraph
+    command:
+      - langgraph
+      - dev
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8123"
+      - --no-browser
+      - --n-jobs-per-worker
+      - "${GRAPH_MAX_CONCURRENCY:-3}"
+    ports:
+      - "127.0.0.1:8123:8123"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api:
+    <<: *forge-service
+    command: ["uvicorn", "forge.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  consumer:
+    <<: *forge-service
+    environment:
+      <<: *forge-environment
+      CONSUMER_KIND: start
+    command: ["uvicorn", "forge.consumer_app:app", "--host", "0.0.0.0", "--port", "8010"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      langgraph:
+        condition: service_started
+
+  index-consumer:
+    <<: *forge-service
+    environment:
+      <<: *forge-environment
+      CONSUMER_KIND: index_document
+      ROCKETMQ_CONSUMER_SECRET: ${ROCKETMQ_INDEX_CONSUMER_SECRET:-development-index-consumer-secret}
+    command: ["uvicorn", "forge.consumer_app:app", "--host", "0.0.0.0", "--port", "8010"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  audit-consumer:
+    <<: *forge-service
+    environment:
+      <<: *forge-environment
+      CONSUMER_KIND: audit_job
+      ROCKETMQ_CONSUMER_SECRET: ${ROCKETMQ_AUDIT_CONSUMER_SECRET:-development-audit-consumer-secret}
+    command: ["uvicorn", "forge.consumer_app:app", "--host", "0.0.0.0", "--port", "8010"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  outbox:
+    <<: *forge-service
+    command: ["python", "-m", "forge.outbox_worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rocketmq-bridge:
+        condition: service_started
+
+  gateway:
+    logging: *forge-logging
+    image: nginx:1.29-alpine
+    ports:
+      - "127.0.0.1:8000:8080"
+    volumes:
+      - ./deploy/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  monitoring:
+    <<: *forge-service
+    command: ["uvicorn", "forge.monitoring_app:app", "--host", "0.0.0.0", "--port", "9000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d"]
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - forge-prometheus:/prometheus
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    ports: ["127.0.0.1:9093:9093"]
+    volumes:
+      - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - forge-alertmanager:/alertmanager
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-forge-local-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - forge-grafana:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  forge-redis:
+  forge-prometheus:
+  forge-alertmanager:
+  forge-grafana:
+  forge-postgres:
+  rocketmq-namesrv-logs:
+  rocketmq-broker-logs:
+  rocketmq-broker-store:

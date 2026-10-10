@@ -22,9 +22,10 @@ reference/
 
 # Node modules and build
 node_modules/
-forge-web-react/node_modules/
-forge-web-react/dist/
-forge-web-react/.vite/
+web/node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
 dist/
 
 # Environment and secrets

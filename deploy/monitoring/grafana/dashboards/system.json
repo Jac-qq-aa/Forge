@@ -1,0 +1,170 @@
+{
+  "uid": "forge-system",
+  "title": "Forge 系统与积压",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "服务可用性",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "任务状态",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (forge_jobs)",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "最久等待秒数",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "forge_oldest_job_seconds",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Outbox 状态",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "forge_outbox",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Graph 容量",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "forge_graph_capacity",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "进程内存",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_resident_memory_bytes",
+          "legendFormat": "{{instance}} {{status}} {{operation}} {{role}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "RocketMQ 待消费与消费中消息",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rocketmq_consumer_ready_messages"
+        },
+        {
+          "refId": "B",
+          "expr": "rocketmq_consumer_inflight_messages"
+        }
+      ]
+    }
+  ]
+}

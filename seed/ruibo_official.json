@@ -1,0 +1,36 @@
+{
+  "organizations": [
+    {"key":"group","legal_name":"锐博天成集团股份有限公司","organization_type":"group_headquarters","region":"广东省广州市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"it_xian","legal_name":"广东锐博天成信息科技有限公司西安分公司","organization_type":"branch","region":"陕西省西安市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"it_nanjing","legal_name":"广东锐博天成信息科技有限公司南京分公司","organization_type":"branch","region":"江苏省南京市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"hr_inner_mongolia","legal_name":"广东锐博人力资源服务有限公司内蒙古分公司","organization_type":"branch","region":"内蒙古自治区包头市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"hr_chongqing","legal_name":"广东锐博人力资源服务有限公司重庆分公司","organization_type":"branch","region":"重庆市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"hr_xiamen","legal_name":"广东锐博人力资源服务有限公司厦门分公司","organization_type":"branch","region":"福建省厦门市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"hr_hangzhou","legal_name":"广东锐博人力资源服务有限公司杭州分公司","organization_type":"branch","region":"浙江省杭州市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"it_shijiazhuang","legal_name":"广东锐博天成信息科技有限公司石家庄分公司","organization_type":"branch","region":"河北省石家庄市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"hr_qingdao","legal_name":"广东锐博人力资源服务有限公司青岛分公司","organization_type":"branch","region":"山东省青岛市","source_url":"https://www.nnngu.com/framework.html"},
+    {"key":"shanghai_tianhuibo","legal_name":"上海天汇博人力资源服务有限公司","organization_type":"officially_listed_institution","region":"上海市","source_url":"https://www.nnngu.com/framework.html"}
+  ],
+  "relations": [
+    {"subject":"group","object":"it_xian","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博天成信息科技有限公司西安分公司"},
+    {"subject":"group","object":"it_nanjing","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博天成信息科技有限公司南京分公司"},
+    {"subject":"group","object":"hr_inner_mongolia","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博人力资源服务有限公司内蒙古分公司"},
+    {"subject":"group","object":"hr_chongqing","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博人力资源服务有限公司重庆分公司"},
+    {"subject":"group","object":"hr_xiamen","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博人力资源服务有限公司厦门分公司"},
+    {"subject":"group","object":"hr_hangzhou","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博人力资源服务有限公司杭州分公司"},
+    {"subject":"group","object":"it_shijiazhuang","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博天成信息科技有限公司石家庄分公司"},
+    {"subject":"group","object":"hr_qingdao","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示广东锐博人力资源服务有限公司青岛分公司"},
+    {"subject":"group","object":"shanghai_tianhuibo","relation_type":"official_listing","confidence":0.90,"source_url":"https://www.nnngu.com/framework.html","source_quote":"官网旗下机构页面列示上海天汇博人力资源服务有限公司"}
+  ],
+  "aliases": [
+    {"organization":"group","alias":"锐博集团","normalized_alias":"锐博集团"},
+    {"organization":"group","alias":"锐博","normalized_alias":"锐博"}
+  ],
+  "business_offerings": [
+    {"organization":"group","name":"人力资源服务","description":"猎头、劳务派遣、人事、灵活用工、社保公积金、考试考务和档案等服务","source_url":"https://www.nnngu.com/","source_quote":"官网业务服务平台列示人力资源服务及其业务类别"},
+    {"organization":"group","name":"流程外包","description":"商务流程、生产制造、岗位和招聘流程外包","source_url":"https://www.nnngu.com/","source_quote":"官网导航列示外包服务类别"},
+    {"organization":"group","name":"企业出海及跨境人才服务","description":"企业出海、内地企业赴港、港企进入内地和跨境人才服务","source_url":"https://www.nnngu.com/","source_quote":"官网导航列示出海服务类别"},
+    {"organization":"group","name":"机器人与智能装备","description":"机器人与智能装备相关服务","source_url":"https://www.nnngu.com/","source_quote":"官网业务服务平台列示机器人与智能装备"},
+    {"organization":"group","name":"信息技术服务","description":"信息技术外包和定制服务","source_url":"https://www.nnngu.com/","source_quote":"官网业务服务平台列示信息技术服务"}
+  ]
+}

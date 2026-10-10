@@ -1,133 +1,72 @@
-"""Configuration management for Forge workflow."""
+from __future__ import annotations
 
-import os
-from dotenv import load_dotenv
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 
-load_dotenv()
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-# Qwen LLM Configuration (OpenAI-compatible DashScope API)
-QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
-QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.7-max")
+    environment: str = "development"
+    database_url: str = "postgresql://forge_app:forge_app@127.0.0.1:5432/forge"
+    migration_database_url: str = "postgresql://forge_owner:forge_owner@127.0.0.1:5432/forge"
+    jwt_secret: str = Field(default="development-only-change-this-secret", min_length=32)
+    jwt_issuer: str = "forge"
+    jwt_audience: str = "forge-api"
 
-# Claude/Anthropic compatibility aliases for legacy config names.
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", QWEN_API_KEY)
-ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", QWEN_API_URL)
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", QWEN_MODEL)
+    llm_api_key: str = ""
+    llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    llm_model: str = "qwen3.7-max"
+    skill_router_model: str = "qwen-turbo"
+    embedding_model: str = "text-embedding-v3"
+    embedding_dimensions: int = 1024
+    llm_timeout_seconds: int = 180
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    model_main_rpm: int = Field(default=20, ge=1)
+    model_main_tpm: int = Field(default=100000, ge=1)
+    model_main_concurrency: int = Field(default=3, ge=1)
+    model_router_rpm: int = Field(default=30, ge=1)
+    model_router_tpm: int = Field(default=30000, ge=1)
+    model_router_concurrency: int = Field(default=2, ge=1)
+    model_embedding_rpm: int = Field(default=30, ge=1)
+    model_embedding_tpm: int = Field(default=60000, ge=1)
+    model_embedding_concurrency: int = Field(default=2, ge=1)
+    model_limit_wait_seconds: float = Field(default=180, gt=0)
+    model_max_output_tokens: int = Field(default=4096, ge=1)
+    graph_max_concurrency: int = Field(default=3, ge=1)
+    index_max_concurrency: int = Field(default=1, ge=1)
+    audit_max_concurrency: int = Field(default=1, ge=1)
+    consumer_kind: Literal["start", "index_document", "audit_job"] = "start"
+    metrics_port: int = Field(default=9001, ge=1, le=65535)
 
-# Judge LLM Configuration (用于 AI 检测，使用不同模型实现隔离)
-# 使用同一个 API Key，但指定更强的模型进行判断
-JUDGE_API_KEY = os.getenv("JUDGE_API_KEY", QWEN_API_KEY)  # 默认使用 Qwen API Key
-JUDGE_API_URL = os.getenv("JUDGE_API_URL", QWEN_API_URL)  # 默认使用 Qwen API URL
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "qwen3.7-max")  # 判断模型，默认使用同一 Qwen 3.7 模型
+    tavily_api_key: str = ""
+    tavily_max_results: int = 5
+    critic_max_failures: int = 3
+    consumer_max_attempts: int = 3
+    sql_timeout_ms: int = 5000
+    sql_result_limit: int = 100
+    skill_root: Path = Path("skills/company_knowledge")
+    article_skill_root: Path = Path("skills/article_types")
+    article_facts_skill_root: Path = Path("skills/article_facts")
 
-# LangSmith Configuration (工作流追踪和可视化)
-LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
-LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "true")
-LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "Forge-Content-Workflow")
+    langgraph_server_url: str = "http://127.0.0.1:8123"
+    langgraph_assistant_id: str = "forge"
+    langgraph_reconcile_seconds: float = 1.0
 
-# HeyGen Configuration (数字人视频生成)
-HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "")
+    rocketmq_bridge_url: str = "http://127.0.0.1:8090"
+    rocketmq_bridge_token: str = "development-rocketmq-bridge-token"
+    rocketmq_publish_timeout_seconds: float = 10.0
+    rocketmq_consumer_secret: str = "development-rocketmq-consumer-secret"
+    outbox_poll_seconds: float = 0.5
+    outbox_batch_size: int = 50
+    outbox_max_attempts: int = 3
+    trace_retention_days: int = Field(default=30, ge=1)
 
-# Platform URLs
-XHS_BASE_URL = "https://www.xiaohongshu.com"
-ZHIHU_BASE_URL = "https://www.zhihu.com"
 
-# Output paths (持久化目录)
-VIDEO_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "videos")
-IMAGE_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "images")
-SCRIPT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "scripts")
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "cookies", "xhs_cookies.json")
-
-# Control parameters
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "180"))
-LLM_MAX_ATTEMPTS = int(os.getenv("LLM_MAX_ATTEMPTS", "2"))
-PLAYWRIGHT_TIMEOUT = 30000  # ms
-
-# Supported target platforms
-TARGET_PLATFORMS = ["xhs_video", "zhihu_article", "zhihu_video"]
-
-# ========== 深度生成模式配置 ==========
-
-# Session 管理
-DEEP_MODE_SESSION_TTL = int(os.getenv("DEEP_MODE_SESSION_TTL", "86400"))  # 24小时
-OUTLINE_MAX_REVISIONS = int(os.getenv("OUTLINE_MAX_REVISIONS", "3"))      # 大纲最多修改 3 次
-AGENT_EXECUTION_TIMEOUT = int(os.getenv("AGENT_EXECUTION_TIMEOUT", "60"))  # Agent 超时 60s
-
-# 目标平台选项
-TARGET_PLATFORM_OPTIONS = ["zhihu_article", "xhs_video", "wechat_article"]
-
-# ============================================================================
-# Redis Configuration
-# ============================================================================
-
-REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
-REDIS_SSL: bool = _env_bool("REDIS_SSL")
-REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
-REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "200"))
-REDIS_SOCKET_TIMEOUT_SECONDS: float = float(
-    os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "2")
-)
-
-# Session TTL (30 minutes)
-SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))
-
-# ============================================================================
-# PostgreSQL Configuration
-# ============================================================================
-# 注意: 移除了默认凭据，必须通过环境变量配置
-# 启动时会校验必要配置是否完整
-
-PG_HOST: str = os.getenv("PG_HOST", "localhost")
-PG_PORT: int = int(os.getenv("PG_PORT", "5432"))
-PG_USER: str = os.getenv("PG_USER", "")  # 必填，无默认值
-PG_PASSWORD: str = os.getenv("PG_PASSWORD", "")  # 必填，无默认值
-PG_SSL: bool = _env_bool("PG_SSL")
-PG_DATABASE: str = os.getenv("PG_DATABASE", "forge")
-PG_POOL_MIN_SIZE: int = int(os.getenv("PG_POOL_MIN_SIZE", "2"))
-PG_POOL_MAX_SIZE: int = int(os.getenv("PG_POOL_MAX_SIZE", "10"))
-PG_STATEMENT_CACHE_SIZE: int = int(os.getenv("PG_STATEMENT_CACHE_SIZE", "0"))
-
-# 配置校验（启动时检查必要配置）
-def validate_db_config():
-    """校验数据库配置是否完整，缺失必要配置时抛出异常。"""
-    missing = []
-    if not PG_USER:
-        missing.append("PG_USER")
-    if not PG_PASSWORD:
-        missing.append("PG_PASSWORD")
-    if missing:
-        raise RuntimeError(
-            f"数据库配置不完整，请设置环境变量: {', '.join(missing)}。"
-            f"示例: export PG_USER=forge PG_PASSWORD=your_password"
-        )
-    return True
-
-# ============================================================================
-# Evaluation Configuration
-# ============================================================================
-
-# Redis Queue for evaluation (使用db=1，与session db=0隔离)
-EVAL_REDIS_DB: int = int(os.getenv("EVAL_REDIS_DB", "1"))
-EVAL_QUEUE_NAME: str = os.getenv("EVAL_QUEUE_NAME", "forge:evaluation:queue")
-
-# 评估权重（改写场景专用）
-# - SummarizationScore（忠实度）: 35%
-# - RubricsScore（改写质量）: 30%
-# - Human Score（人性化）: 35%
-EVAL_SUMMARIZATION_WEIGHT: float = float(os.getenv("EVAL_SUMMARIZATION_WEIGHT", "0.35"))
-EVAL_RUBRICS_WEIGHT: float = float(os.getenv("EVAL_RUBRICS_WEIGHT", "0.30"))
-EVAL_HUMAN_WEIGHT: float = float(os.getenv("EVAL_HUMAN_WEIGHT", "0.35"))
-
-# Worker配置
-EVAL_WORKER_BATCH_SIZE: int = int(os.getenv("EVAL_WORKER_BATCH_SIZE", "10"))
-EVAL_WORKER_TIMEOUT: int = int(os.getenv("EVAL_WORKER_TIMEOUT", "60"))
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()

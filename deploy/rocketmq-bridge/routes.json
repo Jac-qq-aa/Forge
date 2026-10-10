@@ -1,0 +1,5 @@
+[
+  {"topic":"forge-workflow-commands","consumer_group":"forge-workflow-workers","target_url":"http://consumer:8010/internal/rocketmq","secret_env":"WORKFLOW_CONSUMER_SECRET","threads":2,"max_retries":3},
+  {"topic":"forge-index-commands","consumer_group":"forge-index-workers","target_url":"http://index-consumer:8010/internal/rocketmq","secret_env":"INDEX_CONSUMER_SECRET","threads":1,"max_retries":3},
+  {"topic":"forge-audit-commands","consumer_group":"forge-audit-workers","target_url":"http://audit-consumer:8010/internal/rocketmq","secret_env":"AUDIT_CONSUMER_SECRET","threads":1,"max_retries":3}
+]

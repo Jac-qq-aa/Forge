@@ -1,0 +1,9 @@
+route:
+  receiver: local-ui
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+receivers:
+  - name: local-ui
+# 仅在本机告警页面展示；配置团队通知地址后添加 webhook/email receiver。

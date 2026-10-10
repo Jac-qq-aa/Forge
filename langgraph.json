@@ -1,6 +1,6 @@
 {
-  "dependencies": ["./forge"],
+  "dependencies": ["."],
   "graphs": {
-    "deep_mode_agent": "./forge/deep_mode/server_graph.py:app"
+    "forge": "./forge/extensions/langgraph_server.py:graph"
   }
 }

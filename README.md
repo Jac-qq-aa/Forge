@@ -1,195 +1,103 @@
-# Forge - 内容转换平台
+# Forge
 
-多平台内容转换工作流系统，支持从知乎/微信公众号抓取内容，AI改写生成原创内容。
+Forge 是锐博内部使用的对话式事实写作系统。一段对话只处理一篇文章；员工粘贴原文后，系统通过 planner 汇总原文事实、公司数据库、公司历史文档和 Tavily 证据，生成事实清单与逐段大纲。事实与大纲校验后自动进入 generator → critic ⇄ revise，冲突按系统规则处理并记录。
 
-## 功能特性
+## 当前架构
 
-### 核心功能
-- **多平台抓取**：知乎、微信公众号
-- **深度内容生成**：事实研究、大纲审核、正文生成、微调与定稿
-- **知识库融合**：自动搜索锐博集团知识库，自然融入品牌信息
-- **回答筛选**：知乎问题支持多回答筛选，按点赞排序，字数过滤
-- **合并洗稿**：支持合并多个回答后整体改写
+- Gateway：外部入口、JWT 预校验、限流、请求追踪和 SSE 转发；
+- FastAPI：认证、对话、事实 CRUD、自动版本快照和 SSE 事件；
+- LangGraph Server：意图、planner、outline、generator、critic、revise、checkpoint 和自动决策；
+- RocketMQ：工作流命令、索引命令、重试和死信；
+- PostgreSQL + pgvector：业务状态、任务、证据、组织数据、文档和向量；
+- Transactional Outbox：保证业务任务与待发送命令在同一事务落库；
+- Runtime Consumer：重新解析权限、持久入队、按全局容量提交远程 run，并投影执行结果；
+- 运行时 Text2SQL skill：只读 AST 校验、数据库只读角色和 RLS；SQL 失败时可返回相关口径 Markdown 原文，并明确标记为未核实；
+- Markdown 路由：关键词先选公司知识资源，未命中时由 `SKILL_ROUTER_MODEL` 小模型选择预设类别；
+- 文章类型 skill：Planner 识别原文类型并加载对应规范，贯穿大纲、生成、Critic 和修订；
+- 文章事实 skill：先抽取文章主旨和表达重点，再按删除影响及逐字来源筛选核心事实；Tavily 只补充核心事实，公司 pgvector 只补充公司自身说明；planner 与 critic 共用筛选规则；
+- React + Vite：统一对话、事实清单和大纲工作区。
 
-### 平台支持
+浏览器只访问 Gateway。LangGraph Server、RocketMQ Bridge 和 Runtime Consumer 都是内网服务；`workflow_jobs` 保存状态、幂等键、远程 thread/run 映射和审计，并承担消费者接收消息后的持久准入队列。
 
-| 平台 | 作为来源 | 作为目标 |
-|------|----------|----------|
-| 知乎 | ✓ 问答、文章 | ✓ 知乎文章 |
-| 微信公众号 | ✓ | ✓ 微信公众号文章 |
+## 启动
 
-## 快速开始
+需要 Python 3.11+、Node.js 20+ 和 Docker。
 
-### 1. 环境准备
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd Forge
-
-# 创建 conda 环境
-conda create -n forge python=3.10
-conda activate forge
-
-# 安装依赖
-pip install -r requirements.txt
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+python -m forge.cli create-user admin@example.com change-this-password --type admin
+python -m forge.cli import-seed seed/ruibo_official.json
 ```
 
-### 2. 配置
+Gateway 地址是 `http://127.0.0.1:8000`，LangGraph Studio/API 调试地址是 `http://127.0.0.1:8123`。本地前端仍使用：
 
-创建 `.env` 文件：
-```
-QWEN_API_KEY=your-api-key
-QWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_MODEL=qwen3.6-plus
-```
-
-### 3. 启动服务
-
-```bash
-# 启动 Milvus 向量数据库（用于知识库）
-docker-compose up -d
-
-# 启动 Web 服务
-python run_web.py
+```powershell
+Set-Location web
+npm install
+npm run dev
 ```
 
-访问 http://localhost:8000 开始使用。
+打开 `http://localhost:5173`。
 
-### 4. 知乎登录
+建立公司租户并给员工授权：
 
-首次使用知乎功能需要扫码登录：
-
-```bash
-python login_zhihu.py
+```powershell
+python -m forge.cli create-tenant 锐博
+python -m forge.cli add-member employee@example.com <tenant-id> --role employee
 ```
 
-浏览器会弹出知乎页面，扫码登录后自动保存状态。
+为公司知识空间导入经过官方来源核验的人力资源业务口径：
 
-## 项目结构
-
-```
-forge/
-├── config.py                 # 配置管理
-├── tools/
-│   ├── llm_client.py         # Qwen LLM 封装
-│   ├── zhihu_scraper_persistent.py  # 知乎爬虫
-│   ├── wechat_scraper.py     # 微信公众号爬虫
-│   ├── tts_generator.py      # Edge TTS
-│   └── video_composer.py     # FFmpeg 合成
-├── agents/
-│   ├── research_agent.py     # 事实研究
-│   ├── reflection_writer.py  # 正文生成与质量迭代
-│   └── revision_agent.py     # 定向修改
-├── knowledge/
-│   ├── config.py             # Milvus 配置
-│   └── manager.py            # 知识库管理
-├── deep_mode/
-│   ├── graph_hil.py          # 唯一 LangGraph 工作流
-│   ├── session_state.py      # 会话状态
-│   └── session_manager.py    # 会话持久化
-├── graph/
-│   └── checkpointer.py       # PostgreSQL 检查点
-└── web/
-    ├── app.py                # FastAPI 后端
-    ├── templates/index.html  # 前端页面
-    └── static/style.css      # 样式
+```powershell
+python -m forge.cli migrate
+python -m forge.cli import-hr-terms seed/hr_business_terms.json <tenant-id>
 ```
 
-## 工作流架构
+导入命令只接受 `https://*.gov.cn` 官方来源，按稳定编码幂等更新。运行时 Text2SQL 对人力资源口径表只有 `SELECT` 权限；所有记录继续由 `space_id` 和 RLS 隔离。
 
-Forge 只保留深度生成流程，基于 LangGraph 检查点支持人工审核后的暂停与恢复：
+首次启动容器会执行 `migrations/001_initial.sql`，随后 `migrate` 服务按顺序应用其余迁移。手动初始化可运行 `python -m forge.cli migrate`；迁移记录会阻止重复执行。此基线面向干净数据库，不迁移旧 Forge 数据。
 
-```
-START → RAG → Research → 事实审核 → Outline → 大纲审核
-      → Reflection → 内容审核/微调 → Finalize → END
-```
+本机不使用 Docker 时，需要分别启动以下进程：
 
-| 节点 | 功能 |
-|------|------|
-| RAG | 检索知识库素材 |
-| Research | 生成可追溯事实清单 |
-| 事实审核 | 用户确认、排除或要求补充研究 |
-| Outline | 基于确认事实生成大纲 |
-| Reflection | 生成正文并进行质量迭代 |
-| 内容审核/微调 | 用户逐轮调整正文 |
-| Finalize | 保存定稿并投递异步质量评估 |
-
-## 界面说明
-
-### Web界面功能
-
-1. **配置参数**
-   - 来源平台：知乎/微信公众号
-   - 目标平台：知乎文章/微信公众号文章
-   - 搜索方式：关键词/博主文章
-
-2. **搜索与筛选**
-   - 关键词搜索文章
-   - 知乎问题支持回答筛选（点赞、字数过滤）
-   - 多回答合并洗稿
-
-3. **深度生成**
-   - 审核事实与来源
-   - 确认或修改大纲
-   - 对话微调并保存定稿
-
-## 常用命令
-
-```bash
-# 激活环境
-conda activate forge
-
-# 启动 Web 服务
-python run_web.py
-
-# 知乎登录
-python login_zhihu.py
-
-# 导入知识库文档
-python import_docs.py
-
-# 查询知识库
-python query_knowledge.py
-
-# 启动 Milvus GUI (Attu)
-docker run -d --name attu -p 3000:3000 -e MILVUS_URL=host.docker.internal:19530 zilliz/attu:latest
+```powershell
+python run_api.py
+python run_consumer.py
+python -m forge.outbox_worker
+langgraph dev --host 127.0.0.1 --port 8123 --no-browser
 ```
 
-## 配置说明
+RocketMQ Bridge 使用官方 Java 客户端，解决 Python 进程直接依赖非官方 RocketMQ 客户端的问题。Bridge 只接受带内部令牌的发布请求，并用独立共享密钥回调 Runtime Consumer。
 
-### 环境变量 (.env)
+数据库使用两个账号：`forge_owner` 只负责迁移、种子与租户授权命令；API、worker 和普通用户命令使用无 RLS 绕过权限的 `forge_app`。生产环境必须替换示例密码。
 
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| QWEN_API_KEY | 通义千问 API Key | 是 |
-| QWEN_MODEL | 模型名称 | 否（默认 qwen3.6-plus） |
+Windows 本地连接使用 `127.0.0.1`，避免 `localhost` 优先尝试不可达 IPv6 端口造成约 20 秒连接延迟。
 
-### 浏览器缓存
+工作台支持事实新增、编辑、排除、自动冲突记录、事实与大纲自动通过、正文修订和定稿。定稿会分块写入个人知识空间，并由 worker 生成 pgvector 向量。
 
-登录状态保存在：
-- 知乎：`~/.forge/browser_data/zhihu`
-- 微信：`~/.forge/browser_data/wechat`
+## 权限
 
-## 技术栈
+账号分访客、员工和管理员。公开知识空间可供全部账号查询；公司空间通过授权记录开放；个人空间只属于本人。每次请求重新从数据库解析权限。
 
-- **后端**：FastAPI + LangGraph
-- **前端**：HTML + CSS（腾讯风格UI）
-- **AI**：Qwen LLM（通义千问）
-- **向量数据库**：Milvus
-- **浏览器自动化**：Playwright + playwright-stealth
+agent 生成的 SQL 依次经过允许表字段、函数、单语句和只读 AST 检查，再切换到 `forge_query` 角色及只读事务执行。RLS 负责最终数据隔离。查询失败与查询无结果是不同状态。
 
-## 文档
+公司知识 Markdown 路由优先使用关键词；未命中时调用 `SKILL_ROUTER_MODEL`，其输出只能选择预设类别，无法传入文件路径。分类调用失败会加载全部只读知识资源。文章类型规范位于 `skills/article_types/`，覆盖公司介绍、业务介绍、行业解读与行规、法律合规说明和案例分析；模型无法判断类型时保留原文类型并使用通用规范。
 
-- [项目概述](docs/project-overview.md)
-- [技术架构](docs/technical-architecture.md)
-- [高并发异步架构实施说明](docs/high-concurrency-async-architecture.md)
-- [RocketMQ 文章生成异步调度与故障恢复](docs/rocketmq-generation-async.md)
-- [多线程与高并发处理说明（含关键代码）](docs/high-concurrency-code-guide.md)
-- [高并发第一阶段加固说明](docs/high-concurrency-phase-one.md)
-- [API接口](docs/api-reference.md)
-- [部署指南](docs/deployment-guide.md)
+## 验证
 
-## 许可证
+```powershell
+pytest
+$env:FORGE_INTEGRATION_DSN='postgresql://forge_app:forge_app@127.0.0.1:5432/forge'
+$env:FORGE_INTEGRATION_OWNER_DSN='postgresql://forge_owner:forge_owner@127.0.0.1:5432/forge'
+pytest tests/integration/test_postgres_runtime.py
+Set-Location web
+npm run typecheck
+npm run build
+```
 
-MIT License
+设计、删除范围和验收标准见：
+
+- `docs/2026-09-25-forge-rebuild-design.md`
+- `docs/2026-09-25-legacy-removal-map.md`
+
+容量、共享限流及监控配置见 [运行说明](docs/runtime-capacity-monitoring.md)。
